@@ -1,26 +1,29 @@
-import { query } from './client.js';
+import { getDb } from './client.js';
 
-export async function saveSnapshot(data) {
-  const result = await query(`
+export function saveSnapshot(data) {
+  const db = getDb();
+
+  const stmt = db.prepare(`
     INSERT INTO whoop_daily_snapshots (
       date, recovery_score, recovery_state, strain, sleep_duration,
       sleep_debt, sleep_efficiency, sleep_disturbances, hrv, resting_hr, raw_data, updated_at
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, CURRENT_TIMESTAMP)
-    ON CONFLICT (date) DO UPDATE SET
-      recovery_score = EXCLUDED.recovery_score,
-      recovery_state = EXCLUDED.recovery_state,
-      strain = EXCLUDED.strain,
-      sleep_duration = EXCLUDED.sleep_duration,
-      sleep_debt = EXCLUDED.sleep_debt,
-      sleep_efficiency = EXCLUDED.sleep_efficiency,
-      sleep_disturbances = EXCLUDED.sleep_disturbances,
-      hrv = EXCLUDED.hrv,
-      resting_hr = EXCLUDED.resting_hr,
-      raw_data = EXCLUDED.raw_data,
-      updated_at = CURRENT_TIMESTAMP
-    RETURNING *
-  `, [
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(date) DO UPDATE SET
+      recovery_score = excluded.recovery_score,
+      recovery_state = excluded.recovery_state,
+      strain = excluded.strain,
+      sleep_duration = excluded.sleep_duration,
+      sleep_debt = excluded.sleep_debt,
+      sleep_efficiency = excluded.sleep_efficiency,
+      sleep_disturbances = excluded.sleep_disturbances,
+      hrv = excluded.hrv,
+      resting_hr = excluded.resting_hr,
+      raw_data = excluded.raw_data,
+      updated_at = datetime('now')
+  `);
+
+  stmt.run(
     data.date,
     data.recoveryScore,
     data.recoveryState,
@@ -32,47 +35,41 @@ export async function saveSnapshot(data) {
     data.hrv,
     data.restingHr,
     data.rawData ? JSON.stringify(data.rawData) : null
-  ]);
-
-  return result.rows[0];
-}
-
-export async function getSnapshotByDate(date) {
-  const result = await query(
-    'SELECT * FROM whoop_daily_snapshots WHERE date = $1',
-    [date]
   );
-  return result.rows[0] || null;
+
+  return getSnapshotByDate(data.date);
 }
 
-export async function getLatestSnapshot() {
-  const result = await query(
-    'SELECT * FROM whoop_daily_snapshots ORDER BY date DESC LIMIT 1'
-  );
-  return result.rows[0] || null;
+export function getSnapshotByDate(date) {
+  const db = getDb();
+  return db.prepare('SELECT * FROM whoop_daily_snapshots WHERE date = ?').get(date) || null;
 }
 
-export async function getSnapshotsForRange(startDate, endDate) {
-  const result = await query(`
+export function getLatestSnapshot() {
+  const db = getDb();
+  return db.prepare('SELECT * FROM whoop_daily_snapshots ORDER BY date DESC LIMIT 1').get() || null;
+}
+
+export function getSnapshotsForRange(startDate, endDate) {
+  const db = getDb();
+  return db.prepare(`
     SELECT * FROM whoop_daily_snapshots
-    WHERE date >= $1 AND date <= $2
+    WHERE date >= ? AND date <= ?
     ORDER BY date DESC
-  `, [startDate, endDate]);
-  return result.rows;
+  `).all(startDate, endDate);
 }
 
-export async function getLastNSnapshots(n) {
-  const result = await query(`
+export function getLastNSnapshots(n) {
+  const db = getDb();
+  return db.prepare(`
     SELECT * FROM whoop_daily_snapshots
     ORDER BY date DESC
-    LIMIT $1
-  `, [n]);
-  return result.rows;
+    LIMIT ?
+  `).all(n);
 }
 
-export async function getLastSyncTime() {
-  const result = await query(
-    'SELECT MAX(updated_at) as last_sync FROM whoop_daily_snapshots'
-  );
-  return result.rows[0]?.last_sync || null;
+export function getLastSyncTime() {
+  const db = getDb();
+  const row = db.prepare('SELECT MAX(updated_at) as last_sync FROM whoop_daily_snapshots').get();
+  return row?.last_sync || null;
 }

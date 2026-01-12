@@ -33,3 +33,9 @@ build/
 
 # Test coverage
 coverage/
+
+# SQLite database
+data/
+*.db
+*.db-journal
+*.db-wal
