@@ -1,36 +1,42 @@
-import { getDb } from './client.js';
+import { getDb, saveDb, queryOne } from './client.js';
 
-export function getToken() {
-  const db = getDb();
-  const row = db.prepare('SELECT * FROM whoop_tokens WHERE id = 1').get();
-  return row || null;
+export async function getToken() {
+  return await queryOne('SELECT * FROM whoop_tokens WHERE id = 1');
 }
 
-export function saveToken({ accessToken, refreshToken, expiresAt, scope }) {
-  const db = getDb();
+export async function saveToken({ accessToken, refreshToken, expiresAt, scope }) {
+  const db = await getDb();
 
   // Convert Date to ISO string if needed
   const expiresAtStr = expiresAt instanceof Date ? expiresAt.toISOString() : expiresAt;
 
-  const stmt = db.prepare(`
-    INSERT INTO whoop_tokens (id, access_token, refresh_token, expires_at, scope, updated_at)
-    VALUES (1, ?, ?, ?, ?, datetime('now'))
-    ON CONFLICT(id) DO UPDATE SET
-      access_token = excluded.access_token,
-      refresh_token = excluded.refresh_token,
-      expires_at = excluded.expires_at,
-      scope = excluded.scope,
-      updated_at = datetime('now')
-  `);
+  // Check if token exists
+  const existing = await queryOne('SELECT id FROM whoop_tokens WHERE id = 1');
 
-  stmt.run(accessToken, refreshToken, expiresAtStr, scope);
+  if (existing) {
+    db.run(`
+      UPDATE whoop_tokens SET
+        access_token = ?,
+        refresh_token = ?,
+        expires_at = ?,
+        scope = ?,
+        updated_at = datetime('now')
+      WHERE id = 1
+    `, [accessToken, refreshToken, expiresAtStr, scope]);
+  } else {
+    db.run(`
+      INSERT INTO whoop_tokens (id, access_token, refresh_token, expires_at, scope)
+      VALUES (1, ?, ?, ?, ?)
+    `, [accessToken, refreshToken, expiresAtStr, scope]);
+  }
+
+  saveDb();
   console.log('[Token] Saved/updated token, expires at:', expiresAtStr);
 
-  return getToken();
+  return await getToken();
 }
 
-export function tokenExists() {
-  const db = getDb();
-  const row = db.prepare('SELECT id FROM whoop_tokens WHERE id = 1').get();
+export async function tokenExists() {
+  const row = await queryOne('SELECT id FROM whoop_tokens WHERE id = 1');
   return !!row;
 }

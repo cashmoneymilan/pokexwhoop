@@ -1,13 +1,13 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { getDb } from './client.js';
+import { getDb, exec, query, saveDb } from './client.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = path.join(__dirname, '../../migrations');
 
-function ensureMigrationsTable() {
-  const db = getDb();
+async function ensureMigrationsTable() {
+  const db = await getDb();
   db.exec(`
     CREATE TABLE IF NOT EXISTS migrations (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -15,33 +15,30 @@ function ensureMigrationsTable() {
       applied_at TEXT DEFAULT (datetime('now'))
     )
   `);
+  saveDb();
 }
 
-function getAppliedMigrations() {
-  const db = getDb();
-  const rows = db.prepare('SELECT name FROM migrations ORDER BY id').all();
-  return rows.map(row => row.name);
+async function getAppliedMigrations() {
+  const result = await query('SELECT name FROM migrations ORDER BY id');
+  return result.rows.map(row => row.name);
 }
 
-function applyMigration(name, sql) {
-  const db = getDb();
+async function applyMigration(name, sql) {
+  const db = await getDb();
   console.log(`[Migration] Applying: ${name}`);
 
-  // Execute migration in a transaction
-  const transaction = db.transaction(() => {
-    db.exec(sql);
-    db.prepare('INSERT INTO migrations (name) VALUES (?)').run(name);
-  });
+  db.exec(sql);
+  db.run('INSERT INTO migrations (name) VALUES (?)', [name]);
+  saveDb();
 
-  transaction();
   console.log(`[Migration] Applied: ${name}`);
 }
 
-export function runMigrations() {
+export async function runMigrations() {
   try {
-    ensureMigrationsTable();
+    await ensureMigrationsTable();
 
-    const applied = getAppliedMigrations();
+    const applied = await getAppliedMigrations();
     const files = fs.readdirSync(MIGRATIONS_DIR)
       .filter(f => f.endsWith('.sql'))
       .sort();
@@ -49,7 +46,7 @@ export function runMigrations() {
     for (const file of files) {
       if (!applied.includes(file)) {
         const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8');
-        applyMigration(file, sql);
+        await applyMigration(file, sql);
       }
     }
 
@@ -62,7 +59,13 @@ export function runMigrations() {
 
 // Run directly if called as script
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  runMigrations();
-  console.log('[Migration] Done');
-  process.exit(0);
+  runMigrations()
+    .then(() => {
+      console.log('[Migration] Done');
+      process.exit(0);
+    })
+    .catch((err) => {
+      console.error(err);
+      process.exit(1);
+    });
 }
