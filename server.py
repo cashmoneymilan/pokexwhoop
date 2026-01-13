@@ -305,17 +305,19 @@ async def init():
 if __name__ == "__main__":
     import asyncio
     import uvicorn
+    from contextlib import asynccontextmanager
     from starlette.middleware import Middleware
     from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.applications import Starlette
+    from starlette.routing import Mount
 
     asyncio.run(init())
 
     port = int(os.getenv("PORT", 8080))
     print(f"[Startup] Starting server on port {port}...")
 
-    # Get the ASGI app and run with uvicorn directly
-    # This bypasses FastMCP's host validation
-    app = mcp.streamable_http_app()
+    # Get the ASGI app
+    mcp_app = mcp.streamable_http_app()
 
     # Wrap with middleware to fix host header for Railway
     class HostFixMiddleware(BaseHTTPMiddleware):
@@ -327,13 +329,19 @@ if __name__ == "__main__":
             ]
             return await call_next(request)
 
-    from starlette.applications import Starlette
-    from starlette.routing import Mount
+    # Lifespan that initializes MCP session manager
+    @asynccontextmanager
+    async def lifespan(app):
+        async with mcp.session_manager.run():
+            print("[Startup] MCP session manager started")
+            yield
+            print("[Shutdown] MCP session manager stopped")
 
-    # Create wrapper app with middleware
+    # Create wrapper app with middleware and lifespan
     wrapper = Starlette(
-        routes=[Mount("/", app=app)],
-        middleware=[Middleware(HostFixMiddleware)]
+        routes=[Mount("/", app=mcp_app)],
+        middleware=[Middleware(HostFixMiddleware)],
+        lifespan=lifespan
     )
 
     uvicorn.run(
