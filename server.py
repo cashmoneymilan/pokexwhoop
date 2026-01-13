@@ -170,8 +170,14 @@ async def get_week_trends(metric: str) -> dict:
                      for d in data if normalize_cycle(d)]
         else:
             data = await whoop_client.get_sleep(limit=7)
-            values = [{"date": normalize_sleep(d)["date"], "value": round(normalize_sleep(d)["total_sleep"] / 3600, 1)}
-                     for d in data if normalize_sleep(d)]
+            values = []
+            for d in data:
+                normalized = normalize_sleep(d)
+                if normalized and normalized.get("total_sleep"):
+                    values.append({
+                        "date": normalized["date"],
+                        "value": round(normalized["total_sleep"] / 3600, 1)
+                    })
 
         if not values:
             return {"error": "no_data", "message": f"No {metric} data available"}
