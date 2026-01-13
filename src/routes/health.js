@@ -7,7 +7,7 @@ const router = Router();
 
 /**
  * GET /health
- * Health check endpoint for monitoring
+ * Health check endpoint - always returns 200 for Railway
  */
 router.get('/', async (req, res) => {
   const checks = {
@@ -23,7 +23,7 @@ router.get('/', async (req, res) => {
     // Check database connection
     checks.database = await checkConnection();
     if (!checks.database) {
-      status = 'error';
+      status = 'degraded';
     }
 
     // Check token presence
@@ -37,7 +37,7 @@ router.get('/', async (req, res) => {
       const token = await getToken();
       checks.tokenExpiresAt = token?.expires_at || null;
 
-      // Check if token is expired or expiring soon
+      // Check if token is expired
       if (token?.expires_at) {
         const expiresAt = new Date(token.expires_at);
         const now = new Date();
@@ -53,13 +53,12 @@ router.get('/', async (req, res) => {
 
   } catch (error) {
     console.error('[Health] Check failed:', error.message);
-    status = 'error';
+    status = 'degraded';
     checks.error = error.message;
   }
 
-  const httpStatus = status === 'error' ? 503 : 200;
-
-  res.status(httpStatus).json({
+  // Always return 200 so Railway doesn't kill the container
+  res.status(200).json({
     status,
     timestamp: new Date().toISOString(),
     ...checks
