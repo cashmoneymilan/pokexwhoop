@@ -179,7 +179,12 @@ def normalize_sleep(sleep: Dict) -> Dict:
     def ms_to_sec(ms):
         return round(ms / 1000) if ms else None
 
-    total_sleep = ms_to_sec(stage_summary.get("total_sleep_time_milli"))
+    # V2 API: calculate total sleep from stages (light + deep + REM)
+    light_ms = stage_summary.get("total_light_sleep_time_milli") or 0
+    deep_ms = stage_summary.get("total_slow_wave_sleep_time_milli") or 0
+    rem_ms = stage_summary.get("total_rem_sleep_time_milli") or 0
+    total_sleep_ms = light_ms + deep_ms + rem_ms
+    total_sleep = ms_to_sec(total_sleep_ms) if total_sleep_ms > 0 else None
 
     return {
         "date": sleep.get("start", "")[:10],
