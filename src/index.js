@@ -27,6 +27,11 @@ app.use((req, res, next) => {
   next();
 });
 
+// Simple ping (no dependencies)
+app.get('/ping', (req, res) => {
+  res.send('pong');
+});
+
 // Public routes (no auth required)
 app.get('/', (req, res) => {
   res.json({
