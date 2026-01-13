@@ -412,13 +412,12 @@ async def oauth_callback(code: str = None, state: str = None, error: str = None)
         )
 
 
-# Mount MCP server at /mcp
-app = mcp.streamable_http_app()
+# Mount MCP server - FastMCP's streamable_http_app() exposes /mcp internally
+# So we mount at root to get /mcp endpoint
+mcp_app = mcp.streamable_http_app()
 
-# Combine FastAPI and MCP
-from starlette.routing import Mount
-
-api.mount("/mcp", app)
+# Combine FastAPI and MCP by mounting MCP at root
+api.mount("/", mcp_app)
 
 
 if __name__ == "__main__":
