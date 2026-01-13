@@ -15,6 +15,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse, JSONResponse
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 import database
 from whoop_client import (
@@ -40,9 +41,13 @@ WHOOP_TOKEN_URL = "https://api.prod.whoop.com/oauth/oauth2/token"
 oauth_states = {}
 
 # Initialize FastMCP server with settings
+# Disable DNS rebinding protection for Railway deployment
 mcp = FastMCP(
     "whoop-mcp-server",
-    instructions="Use these tools to get WHOOP health data including recovery scores, sleep metrics, strain, and weekly trends."
+    instructions="Use these tools to get WHOOP health data including recovery scores, sleep metrics, strain, and weekly trends.",
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=False
+    )
 )
 
 
