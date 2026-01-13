@@ -355,43 +355,60 @@ async def oauth_callback(code: str = None, state: str = None, error: str = None)
             content={"error": "missing_code", "message": "No authorization code provided"}
         )
 
-    # Exchange code for tokens
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            WHOOP_TOKEN_URL,
-            data={
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": WHOOP_REDIRECT_URI,
-                "client_id": WHOOP_CLIENT_ID,
-                "client_secret": WHOOP_CLIENT_SECRET
-            }
-        ) as response:
-            if response.status != 200:
-                error_text = await response.text()
-                return JSONResponse(
-                    status_code=400,
-                    content={"error": "token_exchange_failed", "message": error_text}
-                )
+    try:
+        # Exchange code for tokens
+        print(f"[OAuth] Exchanging code for tokens...")
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                WHOOP_TOKEN_URL,
+                data={
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "redirect_uri": WHOOP_REDIRECT_URI,
+                    "client_id": WHOOP_CLIENT_ID,
+                    "client_secret": WHOOP_CLIENT_SECRET
+                }
+            ) as response:
+                response_text = await response.text()
+                print(f"[OAuth] Token response status: {response.status}")
 
-            data = await response.json()
+                if response.status != 200:
+                    print(f"[OAuth] Token exchange failed: {response_text}")
+                    return JSONResponse(
+                        status_code=400,
+                        content={"error": "token_exchange_failed", "message": response_text}
+                    )
 
-    # Calculate expiry
-    expires_at = datetime.now() + timedelta(seconds=data["expires_in"])
+                import json
+                data = json.loads(response_text)
 
-    # Save token
-    await database.save_token(
-        access_token=data["access_token"],
-        refresh_token=data["refresh_token"],
-        expires_at=expires_at.isoformat(),
-        scope=data.get("scope")
-    )
+        # Calculate expiry
+        expires_at = datetime.now() + timedelta(seconds=data["expires_in"])
+        print(f"[OAuth] Token expires at: {expires_at.isoformat()}")
 
-    return {
-        "status": "success",
-        "message": "WHOOP connected successfully!",
-        "expires_at": expires_at.isoformat()
-    }
+        # Save token
+        await database.save_token(
+            access_token=data["access_token"],
+            refresh_token=data["refresh_token"],
+            expires_at=expires_at.isoformat(),
+            scope=data.get("scope")
+        )
+
+        print("[OAuth] Token saved successfully!")
+        return {
+            "status": "success",
+            "message": "WHOOP connected successfully!",
+            "expires_at": expires_at.isoformat()
+        }
+
+    except Exception as e:
+        print(f"[OAuth] Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={"error": "callback_error", "message": str(e)}
+        )
 
 
 # Mount MCP server at /mcp
