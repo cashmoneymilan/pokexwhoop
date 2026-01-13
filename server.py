@@ -304,13 +304,42 @@ async def init():
 
 if __name__ == "__main__":
     import asyncio
+    import uvicorn
+    from starlette.middleware import Middleware
+    from starlette.middleware.base import BaseHTTPMiddleware
+
     asyncio.run(init())
 
     port = int(os.getenv("PORT", 8080))
     print(f"[Startup] Starting server on port {port}...")
 
-    # Set host/port via environment or FastMCP settings
-    mcp.settings.host = "0.0.0.0"
-    mcp.settings.port = port
+    # Get the ASGI app and run with uvicorn directly
+    # This bypasses FastMCP's host validation
+    app = mcp.streamable_http_app()
 
-    mcp.run(transport="streamable-http")
+    # Wrap with middleware to fix host header for Railway
+    class HostFixMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            # Override scope to use localhost for internal validation
+            request.scope["headers"] = [
+                (b"host", b"localhost") if k == b"host" else (k, v)
+                for k, v in request.scope["headers"]
+            ]
+            return await call_next(request)
+
+    from starlette.applications import Starlette
+    from starlette.routing import Mount
+
+    # Create wrapper app with middleware
+    wrapper = Starlette(
+        routes=[Mount("/", app=app)],
+        middleware=[Middleware(HostFixMiddleware)]
+    )
+
+    uvicorn.run(
+        wrapper,
+        host="0.0.0.0",
+        port=port,
+        proxy_headers=True,
+        forwarded_allow_ips="*"
+    )
