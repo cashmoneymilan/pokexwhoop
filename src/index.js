@@ -58,7 +58,18 @@ const httpHandler = createHttpHandler(mcpServer);
 const sseHandler = createSseHandler(mcpServer);
 
 // MCP Streamable HTTP endpoint (for Poke AI - no auth, Poke doesn't support it)
-app.all('/mcp', httpHandler);
+app.all('/mcp', (req, res, next) => {
+  // Handle simple validation requests from Poke
+  if (req.method === 'GET' && !req.headers.accept?.includes('text/event-stream')) {
+    return res.json({
+      name: 'whoop-mcp-server',
+      version: '1.0.0',
+      status: 'ok'
+    });
+  }
+  // Pass to MCP handler for actual protocol requests
+  httpHandler(req, res, next);
+});
 
 // MCP SSE endpoint (legacy)
 app.get('/mcp/sse', requireApiKey, sseHandler.handleSse);
