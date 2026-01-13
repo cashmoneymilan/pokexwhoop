@@ -61,9 +61,17 @@ async def get_today_summary() -> dict:
     strain range.
     """
     try:
+        print("[MCP] Fetching recovery data...")
         recovery_data = await whoop_client.get_recovery(limit=1)
+        print(f"[MCP] Recovery: {recovery_data}")
+
+        print("[MCP] Fetching sleep data...")
         sleep_data = await whoop_client.get_sleep(limit=1)
+        print(f"[MCP] Sleep: {sleep_data}")
+
+        print("[MCP] Fetching cycle data...")
         cycle_data = await whoop_client.get_cycles(limit=1)
+        print(f"[MCP] Cycle: {cycle_data}")
 
         recovery = normalize_recovery(recovery_data[0]) if recovery_data else None
         sleep = normalize_sleep(sleep_data[0]) if sleep_data else None

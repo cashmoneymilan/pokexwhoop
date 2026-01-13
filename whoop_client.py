@@ -83,12 +83,14 @@ class WhoopClient:
         session = await self._get_session()
 
         url = f"{WHOOP_API_BASE}{endpoint}"
+        print(f"[WHOOP] Requesting: {url} with params: {params}")
 
         async with session.get(
             url,
             headers={"Authorization": f"Bearer {access_token}"},
             params=params
         ) as response:
+            print(f"[WHOOP] Response status: {response.status}")
             if response.status == 401:
                 # Try refreshing token and retry
                 token = await database.get_token()
