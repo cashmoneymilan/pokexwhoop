@@ -207,22 +207,150 @@ async def root(request: Request) -> JSONResponse:
         "version": "1.0.0",
         "status": "running",
         "endpoints": {
-            "health": "/health",
+            "health": "/health (also refreshes token if expiring)",
+            "token_status": "/token-status (check token expiry)",
+            "keep_alive": "/keep-alive (use with external cron)",
             "oauth_start": "/oauth/whoop/start",
             "mcp": "/mcp"
-        }
+        },
+        "tip": "Set up a cron job to hit /keep-alive every 30 min to prevent token expiry"
     })
 
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health(request: Request) -> JSONResponse:
-    """Health check endpoint."""
-    token_exists = await database.token_exists()
+    """Health check endpoint - also proactively refreshes token if needed."""
+    token = await database.get_token()
+    token_status = "missing"
+    expires_at = None
+    refresh_attempted = False
+
+    if token:
+        try:
+            expires_at = token.get("expires_at")
+            exp_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00")) if expires_at else None
+            now = datetime.now(exp_dt.tzinfo) if exp_dt and exp_dt.tzinfo else datetime.now()
+
+            if exp_dt and exp_dt > now:
+                # Token still valid - check if we should proactively refresh
+                time_left = exp_dt - now
+                if time_left.total_seconds() < 3600:  # Less than 1 hour left
+                    print("[Health] Token expiring soon, proactively refreshing...")
+                    refresh_attempted = True
+                    await whoop_client._refresh_token(token["refresh_token"])
+                    token_status = "refreshed"
+                else:
+                    token_status = "valid"
+            else:
+                # Token expired - try to refresh
+                print("[Health] Token expired, attempting refresh...")
+                refresh_attempted = True
+                await whoop_client._refresh_token(token["refresh_token"])
+                token_status = "refreshed"
+        except Exception as e:
+            print(f"[Health] Token refresh failed: {e}")
+            token_status = f"refresh_failed: {str(e)}"
+
     return JSONResponse({
         "status": "healthy",
-        "whoop_connected": token_exists,
+        "whoop_connected": token_status in ["valid", "refreshed"],
+        "token_status": token_status,
+        "expires_at": expires_at,
+        "refresh_attempted": refresh_attempted,
         "timestamp": datetime.now().isoformat()
     })
+
+
+@mcp.custom_route("/token-status", methods=["GET"])
+async def token_status(request: Request) -> JSONResponse:
+    """Check detailed token status and time until expiry."""
+    token = await database.get_token()
+
+    if not token:
+        return JSONResponse({
+            "exists": False,
+            "message": "No token found. Authorize at /oauth/whoop/start"
+        })
+
+    expires_at = token.get("expires_at")
+    try:
+        exp_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00")) if expires_at else None
+        now = datetime.now(exp_dt.tzinfo) if exp_dt and exp_dt.tzinfo else datetime.now()
+
+        if exp_dt:
+            time_left = exp_dt - now
+            hours_left = time_left.total_seconds() / 3600
+            is_valid = time_left.total_seconds() > 0
+
+            return JSONResponse({
+                "exists": True,
+                "is_valid": is_valid,
+                "expires_at": expires_at,
+                "hours_until_expiry": round(hours_left, 2),
+                "scope": token.get("scope"),
+                "message": "Token valid" if is_valid else "Token expired - will refresh on next API call"
+            })
+    except Exception as e:
+        return JSONResponse({
+            "exists": True,
+            "error": str(e),
+            "expires_at": expires_at
+        })
+
+
+@mcp.custom_route("/keep-alive", methods=["GET"])
+async def keep_alive(request: Request) -> JSONResponse:
+    """
+    Keep-alive endpoint for external cron jobs.
+    Proactively refreshes token if it will expire within 2 hours.
+
+    Set up a free cron service (cron-job.org, easycron.com, etc.) to hit this
+    endpoint every 30 minutes to ensure your token never expires.
+    """
+    token = await database.get_token()
+
+    if not token:
+        return JSONResponse({
+            "status": "no_token",
+            "message": "No token to keep alive. Authorize at /oauth/whoop/start"
+        })
+
+    try:
+        expires_at = token.get("expires_at")
+        exp_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00")) if expires_at else None
+        now = datetime.now(exp_dt.tzinfo) if exp_dt and exp_dt.tzinfo else datetime.now()
+
+        if exp_dt:
+            time_left = exp_dt - now
+            hours_left = time_left.total_seconds() / 3600
+
+            # Refresh if less than 2 hours left
+            if hours_left < 2:
+                print(f"[Keep-Alive] Token expires in {hours_left:.1f}h, refreshing...")
+                await whoop_client._refresh_token(token["refresh_token"])
+                new_token = await database.get_token()
+                return JSONResponse({
+                    "status": "refreshed",
+                    "message": "Token was refreshed",
+                    "old_expires_at": expires_at,
+                    "new_expires_at": new_token.get("expires_at") if new_token else None,
+                    "timestamp": datetime.now().isoformat()
+                })
+            else:
+                return JSONResponse({
+                    "status": "ok",
+                    "message": f"Token still valid for {hours_left:.1f} hours",
+                    "expires_at": expires_at,
+                    "hours_until_expiry": round(hours_left, 2),
+                    "timestamp": datetime.now().isoformat()
+                })
+    except Exception as e:
+        print(f"[Keep-Alive] Error: {e}")
+        return JSONResponse({
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.now().isoformat()
+        }, status_code=500)
 
 
 @mcp.custom_route("/oauth/whoop/start", methods=["GET"])
