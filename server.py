@@ -304,8 +304,8 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
     print(f"[Startup] Starting server on port {port}...")
 
-    mcp.run(
-        transport="streamable-http",
-        host="0.0.0.0",
-        port=port
-    )
+    # Set host/port via environment or FastMCP settings
+    mcp.settings.host = "0.0.0.0"
+    mcp.settings.port = port
+
+    mcp.run(transport="streamable-http")
