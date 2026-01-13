@@ -1,10 +1,10 @@
 /**
- * MCP Server implementation with SSE transport
+ * MCP Server implementation with Streamable HTTP transport
  * Exposes WHOOP health data as MCP tools for Poke AI
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema
@@ -148,58 +148,68 @@ export function createMcpServer() {
   return server;
 }
 
-// SSE connection handler for Express
+// Streamable HTTP transport handler for Express
+export function createHttpHandler(server) {
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: () => crypto.randomUUID()
+  });
+
+  // Connect server to transport
+  server.connect(transport);
+
+  return async (req, res) => {
+    console.log(`[MCP] ${req.method} request to /mcp`);
+
+    try {
+      await transport.handleRequest(req, res);
+    } catch (error) {
+      console.error('[MCP] Request handling error:', error);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'mcp_error', message: error.message });
+      }
+    }
+  };
+}
+
+// Keep SSE handler for backwards compatibility
 export function createSseHandler(server) {
-  // Store transports by session
   const transports = new Map();
 
   return {
-    // SSE endpoint handler
     handleSse: async (req, res) => {
       console.log('[MCP] New SSE connection');
-
-      // Set SSE headers
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
-      res.setHeader('X-Accel-Buffering', 'no');
 
-      // Create transport
+      const { SSEServerTransport } = await import('@modelcontextprotocol/sdk/server/sse.js');
       const transport = new SSEServerTransport('/mcp/messages', res);
       const sessionId = crypto.randomUUID();
       transports.set(sessionId, transport);
 
-      // Send session ID to client
       res.write(`data: ${JSON.stringify({ type: 'session', sessionId })}\n\n`);
-
-      // Connect server to transport
       await server.connect(transport);
 
-      // Handle client disconnect
       req.on('close', () => {
-        console.log('[MCP] SSE connection closed');
         transports.delete(sessionId);
       });
     },
 
-    // Message endpoint handler
     handleMessage: async (req, res) => {
       const sessionId = req.headers['x-session-id'];
       const transport = transports.get(sessionId);
 
       if (!transport) {
-        return res.status(400).json({ error: 'invalid_session', message: 'Invalid or expired session' });
+        return res.status(400).json({ error: 'invalid_session' });
       }
 
       try {
         await transport.handlePostMessage(req, res);
       } catch (error) {
-        console.error('[MCP] Message handling error:', error);
         res.status(500).json({ error: 'message_error', message: error.message });
       }
     }
   };
 }
 
-// Import crypto for session IDs
 import crypto from 'crypto';

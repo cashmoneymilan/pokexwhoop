@@ -5,7 +5,7 @@
 
 import express from 'express';
 import { runMigrations } from './db/migrate.js';
-import { createMcpServer, createSseHandler } from './mcp/server.js';
+import { createMcpServer, createSseHandler, createHttpHandler } from './mcp/server.js';
 import oauthRoutes from './routes/oauth.js';
 import healthRoutes from './routes/health.js';
 import cronRoutes from './routes/cron.js';
@@ -40,6 +40,7 @@ app.get('/', (req, res) => {
     endpoints: {
       health: '/health',
       oauth_start: '/oauth/whoop/start',
+      mcp: '/mcp',
       mcp_sse: '/mcp/sse'
     }
   });
@@ -53,9 +54,13 @@ app.use('/cron', requireApiKey, cronRoutes);
 
 // MCP Server setup
 const mcpServer = createMcpServer();
+const httpHandler = createHttpHandler(mcpServer);
 const sseHandler = createSseHandler(mcpServer);
 
-// MCP SSE endpoint (requires API key)
+// MCP Streamable HTTP endpoint (for Poke AI)
+app.all('/mcp', requireApiKey, httpHandler);
+
+// MCP SSE endpoint (legacy)
 app.get('/mcp/sse', requireApiKey, sseHandler.handleSse);
 app.post('/mcp/messages', requireApiKey, sseHandler.handleMessage);
 
