@@ -1,5 +1,16 @@
-# Dependencies
-node_modules/
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+ENV/
+.eggs/
+*.egg-info/
+*.egg
 
 # Environment files
 .env
@@ -9,13 +20,6 @@ node_modules/
 # Logs
 logs/
 *.log
-npm-debug.log*
-
-# Runtime
-pids/
-*.pid
-*.seed
-*.pid.lock
 
 # OS files
 .DS_Store
@@ -33,6 +37,9 @@ build/
 
 # Test coverage
 coverage/
+.coverage
+htmlcov/
+.pytest_cache/
 
 # SQLite database
 data/
