@@ -8,6 +8,7 @@ import secrets
 from datetime import datetime, timedelta
 from typing import Optional
 from contextlib import asynccontextmanager
+from urllib.parse import urlencode
 
 import aiohttp
 from dotenv import load_dotenv
@@ -316,14 +317,15 @@ async def oauth_start():
 
     scopes = "read:recovery read:sleep read:workout read:cycles read:profile"
 
-    auth_url = (
-        f"{WHOOP_AUTH_URL}"
-        f"?client_id={WHOOP_CLIENT_ID}"
-        f"&redirect_uri={WHOOP_REDIRECT_URI}"
-        f"&response_type=code"
-        f"&scope={scopes}"
-        f"&state={state}"
-    )
+    params = {
+        "client_id": WHOOP_CLIENT_ID,
+        "redirect_uri": WHOOP_REDIRECT_URI,
+        "response_type": "code",
+        "scope": scopes,
+        "state": state
+    }
+
+    auth_url = f"{WHOOP_AUTH_URL}?{urlencode(params)}"
 
     return RedirectResponse(url=auth_url)
 
