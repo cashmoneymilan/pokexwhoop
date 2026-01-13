@@ -112,7 +112,7 @@ class WhoopClient:
 
     async def get_sleep(self, limit: int = 1) -> List[Dict]:
         """Get sleep data."""
-        data = await self._request("/v1/activity/sleep", {"limit": limit})
+        data = await self._request("/v1/sleep", {"limit": limit})
         return data.get("records", [])
 
     async def get_cycles(self, limit: int = 1) -> List[Dict]:
