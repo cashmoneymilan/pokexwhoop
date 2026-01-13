@@ -79,7 +79,7 @@ async function start() {
     await runMigrations();
 
     // Start server
-    app.listen(PORT, () => {
+    app.listen(PORT, '0.0.0.0', () => {
       console.log(`[Startup] Server running on port ${PORT}`);
       console.log(`[Startup] Environment: ${process.env.NODE_ENV || 'development'}`);
       console.log('[Startup] Ready to accept connections');
