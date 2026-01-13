@@ -13,16 +13,24 @@ DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("DATABASE_PUBLIC_URL")
 _pool: Optional[asyncpg.Pool] = None
 
 
+_pool_lock = None
+
 async def get_pool() -> asyncpg.Pool:
     """Get or create the connection pool."""
-    global _pool
-    if _pool is None:
-        if not DATABASE_URL:
-            raise Exception("DATABASE_URL not set! Add PostgreSQL reference in Railway Variables.")
-        # Log connection (hide password)
-        safe_url = DATABASE_URL.split("@")[-1] if "@" in DATABASE_URL else "unknown"
-        print(f"[DB] Connecting to: ...@{safe_url}")
-        _pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
+    global _pool, _pool_lock
+    import asyncio
+
+    if _pool_lock is None:
+        _pool_lock = asyncio.Lock()
+
+    async with _pool_lock:
+        if _pool is None:
+            if not DATABASE_URL:
+                raise Exception("DATABASE_URL not set! Add PostgreSQL reference in Railway Variables.")
+            # Log connection (hide password)
+            safe_url = DATABASE_URL.split("@")[-1] if "@" in DATABASE_URL else "unknown"
+            print(f"[DB] Connecting to: ...@{safe_url}")
+            _pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
     return _pool
 
 
