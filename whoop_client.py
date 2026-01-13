@@ -108,30 +108,30 @@ class WhoopClient:
 
     async def get_recovery(self, limit: int = 1) -> List[Dict]:
         """Get recovery data."""
-        # Use date range - last 7 days
+        # V2 API uses start/end date range
         end = datetime.now().strftime("%Y-%m-%dT%H:%M:%S.000Z")
         start = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        data = await self._request("/v1/recovery", {"start": start, "end": end, "limit": limit})
+        data = await self._request("/v2/recovery", {"start": start, "end": end, "limit": limit})
         print(f"[WHOOP] Recovery response: {data}")
         return data.get("records", [])
 
     async def get_sleep(self, limit: int = 1) -> List[Dict]:
         """Get sleep data."""
-        # Use date range - last 7 days
+        # V2 API uses /v2/activity/sleep with date range
         end = datetime.now().strftime("%Y-%m-%dT%H:%M:%S.000Z")
         start = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        data = await self._request("/v1/sleep", {"start": start, "end": end, "limit": limit})
+        data = await self._request("/v2/activity/sleep", {"start": start, "end": end, "limit": limit})
         print(f"[WHOOP] Sleep response: {data}")
         return data.get("records", [])
 
     async def get_cycles(self, limit: int = 1) -> List[Dict]:
         """Get cycle/strain data."""
-        data = await self._request("/v1/cycle", {"limit": limit})
+        data = await self._request("/v2/cycle", {"limit": limit})
         return data.get("records", [])
 
     async def get_workouts(self, limit: int = 7) -> List[Dict]:
         """Get workout data."""
-        data = await self._request("/v1/activity/workout", {"limit": limit})
+        data = await self._request("/v2/activity/workout", {"limit": limit})
         return data.get("records", [])
 
 
