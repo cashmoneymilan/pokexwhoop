@@ -258,13 +258,16 @@ async def get_week_trends(metric: str) -> dict:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize database on startup, cleanup on shutdown."""
+    """Initialize database and MCP on startup, cleanup on shutdown."""
     print("[Startup] Initializing database...")
     await database.init_db()
-    print("[Startup] Server ready")
-    yield
-    print("[Shutdown] Closing WHOOP client...")
-    await whoop_client.close()
+
+    # Initialize MCP session manager - required for streamable HTTP
+    async with mcp.session_manager.run():
+        print("[Startup] Server ready")
+        yield
+        print("[Shutdown] Closing WHOOP client...")
+        await whoop_client.close()
 
 
 # Create FastAPI app with lifespan
