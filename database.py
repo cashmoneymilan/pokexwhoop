@@ -9,36 +9,23 @@ from typing import Optional, Dict, Any, List
 
 DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("DATABASE_PUBLIC_URL")
 
-# Connection pool (initialized on first use)
-_pool: Optional[asyncpg.Pool] = None
 
-
-_pool_lock = None
-
-async def get_pool() -> asyncpg.Pool:
-    """Get or create the connection pool."""
-    global _pool, _pool_lock
-    import asyncio
-
-    if _pool_lock is None:
-        _pool_lock = asyncio.Lock()
-
-    async with _pool_lock:
-        if _pool is None:
-            if not DATABASE_URL:
-                raise Exception("DATABASE_URL not set! Add PostgreSQL reference in Railway Variables.")
-            # Log connection (hide password)
-            safe_url = DATABASE_URL.split("@")[-1] if "@" in DATABASE_URL else "unknown"
-            print(f"[DB] Connecting to: ...@{safe_url}")
-            _pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
-    return _pool
+async def get_conn():
+    """Get a fresh database connection."""
+    if not DATABASE_URL:
+        raise Exception("DATABASE_URL not set! Add PostgreSQL reference in Railway Variables.")
+    return await asyncpg.connect(DATABASE_URL)
 
 
 async def init_db():
     """Initialize the database and create tables if they don't exist."""
-    pool = await get_pool()
+    if not DATABASE_URL:
+        raise Exception("DATABASE_URL not set!")
+    safe_url = DATABASE_URL.split("@")[-1] if "@" in DATABASE_URL else "unknown"
+    print(f"[DB] Connecting to: ...@{safe_url}")
 
-    async with pool.acquire() as conn:
+    conn = await get_conn()
+    try:
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS whoop_tokens (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -74,25 +61,25 @@ async def init_db():
             CREATE INDEX IF NOT EXISTS idx_snapshots_date
             ON whoop_daily_snapshots(date DESC)
         """)
-
-    print(f"[DB] Initialized PostgreSQL")
+        print("[DB] Initialized PostgreSQL")
+    finally:
+        await conn.close()
 
 
 async def get_token() -> Optional[Dict[str, Any]]:
     """Get the stored WHOOP token."""
-    pool = await get_pool()
-
-    async with pool.acquire() as conn:
+    conn = await get_conn()
+    try:
         row = await conn.fetchrow("SELECT * FROM whoop_tokens WHERE id = 1")
         return dict(row) if row else None
+    finally:
+        await conn.close()
 
 
 async def save_token(access_token: str, refresh_token: str, expires_at: str, scope: str = None):
     """Save or update the WHOOP token."""
-    pool = await get_pool()
-
-    async with pool.acquire() as conn:
-        # Check if token exists
+    conn = await get_conn()
+    try:
         exists = await conn.fetchval("SELECT id FROM whoop_tokens WHERE id = 1")
 
         if exists:
@@ -111,27 +98,29 @@ async def save_token(access_token: str, refresh_token: str, expires_at: str, sco
                 VALUES (1, $1, $2, $3, $4)
             """, access_token, refresh_token, expires_at, scope)
 
-    print(f"[DB] Token saved, expires at: {expires_at}")
+        print(f"[DB] Token saved, expires at: {expires_at}")
+    finally:
+        await conn.close()
 
 
 async def token_exists() -> bool:
     """Check if a token exists."""
-    pool = await get_pool()
-
-    async with pool.acquire() as conn:
+    conn = await get_conn()
+    try:
         result = await conn.fetchval("SELECT id FROM whoop_tokens WHERE id = 1")
         return result is not None
+    finally:
+        await conn.close()
 
 
 async def save_snapshot(data: Dict[str, Any]):
     """Save or update a daily snapshot."""
     import json
 
-    pool = await get_pool()
+    conn = await get_conn()
     raw_data = json.dumps(data.get("raw_data")) if data.get("raw_data") else None
 
-    async with pool.acquire() as conn:
-        # Check if snapshot exists for this date
+    try:
         exists = await conn.fetchval(
             "SELECT id FROM whoop_daily_snapshots WHERE date = $1",
             data.get("date")
@@ -164,37 +153,42 @@ async def save_snapshot(data: Dict[str, Any]):
                 data.get("sleep_efficiency"), data.get("sleep_disturbances"),
                 data.get("hrv"), data.get("resting_hr"), raw_data
             )
+    finally:
+        await conn.close()
 
 
 async def get_latest_snapshot() -> Optional[Dict[str, Any]]:
     """Get the most recent snapshot."""
-    pool = await get_pool()
-
-    async with pool.acquire() as conn:
+    conn = await get_conn()
+    try:
         row = await conn.fetchrow(
             "SELECT * FROM whoop_daily_snapshots ORDER BY date DESC LIMIT 1"
         )
         return dict(row) if row else None
+    finally:
+        await conn.close()
 
 
 async def get_snapshots(limit: int = 7) -> List[Dict[str, Any]]:
     """Get the most recent snapshots."""
-    pool = await get_pool()
-
-    async with pool.acquire() as conn:
+    conn = await get_conn()
+    try:
         rows = await conn.fetch(
             "SELECT * FROM whoop_daily_snapshots ORDER BY date DESC LIMIT $1",
             limit
         )
         return [dict(row) for row in rows]
+    finally:
+        await conn.close()
 
 
 async def get_last_sync_time() -> Optional[str]:
     """Get the timestamp of the last sync."""
-    pool = await get_pool()
-
-    async with pool.acquire() as conn:
+    conn = await get_conn()
+    try:
         result = await conn.fetchval(
             "SELECT MAX(updated_at) FROM whoop_daily_snapshots"
         )
         return str(result) if result else None
+    finally:
+        await conn.close()
