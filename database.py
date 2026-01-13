@@ -7,7 +7,7 @@ import os
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
-DB_PATH = os.getenv("DB_PATH", "./data/whoop.db")
+DB_PATH = os.getenv("DB_PATH", "/data/whoop.db")
 
 
 async def init_db():
