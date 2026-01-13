@@ -101,18 +101,27 @@ class WhoopClient:
 
             if response.status != 200:
                 error_text = await response.text()
+                print(f"[WHOOP] Error {response.status} for {url}: {error_text}")
                 raise Exception(f"WHOOP API error: {response.status} - {error_text}")
 
             return await response.json()
 
     async def get_recovery(self, limit: int = 1) -> List[Dict]:
         """Get recovery data."""
-        data = await self._request("/v1/recovery", {"limit": limit})
+        # Use date range - last 7 days
+        end = datetime.now().strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        start = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        data = await self._request("/v1/recovery", {"start": start, "end": end, "limit": limit})
+        print(f"[WHOOP] Recovery response: {data}")
         return data.get("records", [])
 
     async def get_sleep(self, limit: int = 1) -> List[Dict]:
         """Get sleep data."""
-        data = await self._request("/v1/sleep", {"limit": limit})
+        # Use date range - last 7 days
+        end = datetime.now().strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        start = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        data = await self._request("/v1/sleep", {"start": start, "end": end, "limit": limit})
+        print(f"[WHOOP] Sleep response: {data}")
         return data.get("records", [])
 
     async def get_cycles(self, limit: int = 1) -> List[Dict]:
