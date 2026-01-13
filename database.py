@@ -7,7 +7,7 @@ import os
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("DATABASE_PUBLIC_URL")
 
 # Connection pool (initialized on first use)
 _pool: Optional[asyncpg.Pool] = None
@@ -17,6 +17,11 @@ async def get_pool() -> asyncpg.Pool:
     """Get or create the connection pool."""
     global _pool
     if _pool is None:
+        if not DATABASE_URL:
+            raise Exception("DATABASE_URL not set! Add PostgreSQL reference in Railway Variables.")
+        # Log connection (hide password)
+        safe_url = DATABASE_URL.split("@")[-1] if "@" in DATABASE_URL else "unknown"
+        print(f"[DB] Connecting to: ...@{safe_url}")
         _pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
     return _pool
 
