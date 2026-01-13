@@ -381,15 +381,16 @@ async def oauth_callback(code: str = None, state: str = None, error: str = None)
 
                 import json
                 data = json.loads(response_text)
+                print(f"[OAuth] Token response keys: {list(data.keys())}")
 
         # Calculate expiry
         expires_at = datetime.now() + timedelta(seconds=data["expires_in"])
         print(f"[OAuth] Token expires at: {expires_at.isoformat()}")
 
-        # Save token
+        # Save token (refresh_token may not always be present)
         await database.save_token(
             access_token=data["access_token"],
-            refresh_token=data["refresh_token"],
+            refresh_token=data.get("refresh_token", ""),
             expires_at=expires_at.isoformat(),
             scope=data.get("scope")
         )
