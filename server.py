@@ -4,7 +4,7 @@ Exposes WHOOP health data as MCP tools for Poke AI
 """
 
 import os
-import asyncio
+import secrets
 from datetime import datetime, timedelta
 from typing import Optional
 from contextlib import asynccontextmanager
@@ -16,6 +16,9 @@ from fastapi.responses import RedirectResponse, JSONResponse
 import uvicorn
 
 from mcp.server.fastmcp import FastMCP
+
+# Simple in-memory state storage for OAuth (single-user app)
+oauth_states = {}
 
 import database
 from whoop_client import (
@@ -301,6 +304,16 @@ async def oauth_start():
     if not WHOOP_CLIENT_ID or not WHOOP_REDIRECT_URI:
         raise HTTPException(status_code=500, detail="OAuth not configured")
 
+    # Generate state for CSRF protection
+    state = secrets.token_urlsafe(32)
+    oauth_states[state] = datetime.now()
+
+    # Clean up old states (older than 10 minutes)
+    cutoff = datetime.now() - timedelta(minutes=10)
+    expired = [s for s, t in oauth_states.items() if t < cutoff]
+    for s in expired:
+        del oauth_states[s]
+
     scopes = "read:recovery read:sleep read:workout read:cycles read:profile"
 
     auth_url = (
@@ -309,19 +322,30 @@ async def oauth_start():
         f"&redirect_uri={WHOOP_REDIRECT_URI}"
         f"&response_type=code"
         f"&scope={scopes}"
+        f"&state={state}"
     )
 
     return RedirectResponse(url=auth_url)
 
 
 @api.get("/oauth/whoop/callback")
-async def oauth_callback(code: str = None, error: str = None):
+async def oauth_callback(code: str = None, state: str = None, error: str = None):
     """Handle WHOOP OAuth callback."""
     if error:
         return JSONResponse(
             status_code=400,
             content={"error": "oauth_error", "message": error}
         )
+
+    # Validate state
+    if not state or state not in oauth_states:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "invalid_state", "message": "Invalid or expired state. Please try again."}
+        )
+
+    # Remove used state
+    del oauth_states[state]
 
     if not code:
         return JSONResponse(
