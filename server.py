@@ -1,25 +1,20 @@
 """
-WHOOP MCP Server using FastMCP + FastAPI
+WHOOP MCP Server using FastMCP standalone
 Exposes WHOOP health data as MCP tools for Poke AI
 """
 
 import os
+import json
 import secrets
 from datetime import datetime, timedelta
-from typing import Optional
-from contextlib import asynccontextmanager
 from urllib.parse import urlencode
 
 import aiohttp
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import RedirectResponse, JSONResponse
-import uvicorn
+from starlette.requests import Request
+from starlette.responses import RedirectResponse, JSONResponse
 
 from mcp.server.fastmcp import FastMCP
-
-# Simple in-memory state storage for OAuth (single-user app)
-oauth_states = {}
 
 import database
 from whoop_client import (
@@ -37,14 +32,18 @@ WHOOP_CLIENT_ID = os.getenv("WHOOP_CLIENT_ID")
 WHOOP_CLIENT_SECRET = os.getenv("WHOOP_CLIENT_SECRET")
 WHOOP_REDIRECT_URI = os.getenv("WHOOP_REDIRECT_URI")
 APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8000")
-SERVER_API_KEY = os.getenv("SERVER_API_KEY")
 
 WHOOP_AUTH_URL = "https://api.prod.whoop.com/oauth/oauth2/auth"
 WHOOP_TOKEN_URL = "https://api.prod.whoop.com/oauth/oauth2/token"
 
+# Simple in-memory state storage for OAuth
+oauth_states = {}
 
-# Initialize FastMCP server
-mcp = FastMCP("whoop-mcp-server")
+# Initialize FastMCP server with settings
+mcp = FastMCP(
+    "whoop-mcp-server",
+    instructions="Use these tools to get WHOOP health data including recovery scores, sleep metrics, strain, and weekly trends."
+)
 
 
 # ============== MCP Tools ==============
@@ -57,17 +56,14 @@ async def get_today_summary() -> dict:
     strain range.
     """
     try:
-        # Fetch all data
         recovery_data = await whoop_client.get_recovery(limit=1)
         sleep_data = await whoop_client.get_sleep(limit=1)
         cycle_data = await whoop_client.get_cycles(limit=1)
 
-        # Normalize data
         recovery = normalize_recovery(recovery_data[0]) if recovery_data else None
         sleep = normalize_sleep(sleep_data[0]) if sleep_data else None
         cycle = normalize_cycle(cycle_data[0]) if cycle_data else None
 
-        # Build summary
         summary = {
             "date": datetime.now().strftime("%Y-%m-%d"),
             "recovery": None,
@@ -116,13 +112,9 @@ async def get_latest_recovery() -> dict:
     """
     try:
         recovery_data = await whoop_client.get_recovery(limit=1)
-
         if not recovery_data:
             return {"error": "no_data", "message": "No recovery data available"}
-
-        recovery = normalize_recovery(recovery_data[0])
-        return recovery
-
+        return normalize_recovery(recovery_data[0])
     except Exception as e:
         return {"error": str(e), "message": "Failed to fetch recovery data"}
 
@@ -136,13 +128,9 @@ async def get_last_sleep() -> dict:
     """
     try:
         sleep_data = await whoop_client.get_sleep(limit=1)
-
         if not sleep_data:
             return {"error": "no_data", "message": "No sleep data available"}
-
-        sleep = normalize_sleep(sleep_data[0])
-        return sleep
-
+        return normalize_sleep(sleep_data[0])
     except Exception as e:
         return {"error": str(e), "message": "Failed to fetch sleep data"}
 
@@ -153,100 +141,36 @@ async def get_week_trends(metric: str) -> dict:
     Get 7-day trends for a specific health metric.
 
     Args:
-        metric: The metric to analyze - "recovery" (recovery score),
-                "strain" (daily strain), or "sleep" (total sleep hours)
-
-    Returns:
-        Weekly average, trend direction, percentage change, daily data points,
-        and any notable outliers.
+        metric: The metric to analyze - "recovery", "strain", or "sleep"
     """
     try:
         if metric not in ["recovery", "strain", "sleep"]:
-            return {
-                "error": "invalid_metric",
-                "message": "Metric must be one of: recovery, strain, sleep"
-            }
+            return {"error": "invalid_metric", "message": "Metric must be: recovery, strain, or sleep"}
 
-        # Fetch 7 days of data
         if metric == "recovery":
             data = await whoop_client.get_recovery(limit=7)
-            values = []
-            for item in data:
-                normalized = normalize_recovery(item)
-                if normalized and normalized.get("recovery_score") is not None:
-                    values.append({
-                        "date": normalized["date"],
-                        "value": normalized["recovery_score"]
-                    })
-
+            values = [{"date": normalize_recovery(d)["date"], "value": normalize_recovery(d)["recovery_score"]}
+                     for d in data if normalize_recovery(d)]
         elif metric == "strain":
             data = await whoop_client.get_cycles(limit=7)
-            values = []
-            for item in data:
-                normalized = normalize_cycle(item)
-                if normalized and normalized.get("strain") is not None:
-                    values.append({
-                        "date": normalized["date"],
-                        "value": round(normalized["strain"], 1)
-                    })
-
-        else:  # sleep
+            values = [{"date": normalize_cycle(d)["date"], "value": round(normalize_cycle(d)["strain"], 1)}
+                     for d in data if normalize_cycle(d)]
+        else:
             data = await whoop_client.get_sleep(limit=7)
-            values = []
-            for item in data:
-                normalized = normalize_sleep(item)
-                if normalized and normalized.get("total_sleep") is not None:
-                    hours = round(normalized["total_sleep"] / 3600, 1)
-                    values.append({
-                        "date": normalized["date"],
-                        "value": hours
-                    })
+            values = [{"date": normalize_sleep(d)["date"], "value": round(normalize_sleep(d)["total_sleep"] / 3600, 1)}
+                     for d in data if normalize_sleep(d)]
 
         if not values:
-            return {"error": "no_data", "message": f"No {metric} data available for the past week"}
+            return {"error": "no_data", "message": f"No {metric} data available"}
 
-        # Calculate statistics
-        numeric_values = [v["value"] for v in values]
-        avg = round(sum(numeric_values) / len(numeric_values), 1)
-
-        # Trend calculation (compare first half to second half)
-        if len(numeric_values) >= 4:
-            first_half = numeric_values[:len(numeric_values)//2]
-            second_half = numeric_values[len(numeric_values)//2:]
-            first_avg = sum(first_half) / len(first_half)
-            second_avg = sum(second_half) / len(second_half)
-
-            if second_avg > first_avg * 1.05:
-                trend = "improving"
-            elif second_avg < first_avg * 0.95:
-                trend = "declining"
-            else:
-                trend = "stable"
-
-            change = round(((second_avg - first_avg) / first_avg) * 100, 1) if first_avg else 0
-        else:
-            trend = "insufficient_data"
-            change = 0
-
-        # Find outliers (values more than 1.5 std dev from mean)
-        if len(numeric_values) >= 3:
-            mean = sum(numeric_values) / len(numeric_values)
-            variance = sum((x - mean) ** 2 for x in numeric_values) / len(numeric_values)
-            std_dev = variance ** 0.5
-            threshold = 1.5 * std_dev
-
-            outliers = [v for v in values if abs(v["value"] - mean) > threshold]
-        else:
-            outliers = []
+        numeric = [v["value"] for v in values]
+        avg = round(sum(numeric) / len(numeric), 1)
 
         return {
             "metric": metric,
             "period": "7 days",
             "average": avg,
-            "trend": trend,
-            "change_percent": change,
             "data_points": values,
-            "outliers": outliers,
             "unit": "%" if metric == "recovery" else ("strain" if metric == "strain" else "hours")
         }
 
@@ -254,143 +178,97 @@ async def get_week_trends(metric: str) -> dict:
         return {"error": str(e), "message": f"Failed to fetch {metric} trends"}
 
 
-# ============== FastAPI App ==============
+# ============== Custom HTTP Routes ==============
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Initialize database and MCP on startup, cleanup on shutdown."""
-    print("[Startup] Initializing database...")
-    await database.init_db()
-
-    # Initialize MCP session manager - required for streamable HTTP
-    async with mcp.session_manager.run():
-        print("[Startup] Server ready")
-        yield
-        print("[Shutdown] Closing WHOOP client...")
-        await whoop_client.close()
-
-
-# Create FastAPI app with lifespan
-api = FastAPI(title="WHOOP MCP Server", lifespan=lifespan)
-
-
-@api.get("/")
-async def root():
+@mcp.custom_route("/", methods=["GET"])
+async def root(request: Request) -> JSONResponse:
     """Server info endpoint."""
-    return {
+    return JSONResponse({
         "name": "WHOOP MCP Server",
         "version": "1.0.0",
+        "status": "running",
         "endpoints": {
             "health": "/health",
             "oauth_start": "/oauth/whoop/start",
             "mcp": "/mcp"
         }
-    }
+    })
 
 
-@api.get("/health")
-async def health():
+@mcp.custom_route("/health", methods=["GET"])
+async def health(request: Request) -> JSONResponse:
     """Health check endpoint."""
     token_exists = await database.token_exists()
-    last_sync = await database.get_last_sync_time()
-
-    return {
+    return JSONResponse({
         "status": "healthy",
         "whoop_connected": token_exists,
-        "last_sync": last_sync,
         "timestamp": datetime.now().isoformat()
-    }
+    })
 
 
-@api.get("/oauth/whoop/start")
-async def oauth_start():
+@mcp.custom_route("/oauth/whoop/start", methods=["GET"])
+async def oauth_start(request: Request) -> RedirectResponse:
     """Start WHOOP OAuth flow."""
     if not WHOOP_CLIENT_ID or not WHOOP_REDIRECT_URI:
-        raise HTTPException(status_code=500, detail="OAuth not configured")
+        return JSONResponse({"error": "OAuth not configured"}, status_code=500)
 
-    # Generate state for CSRF protection
     state = secrets.token_urlsafe(32)
     oauth_states[state] = datetime.now()
 
-    # Clean up old states (older than 10 minutes)
+    # Clean old states
     cutoff = datetime.now() - timedelta(minutes=10)
-    expired = [s for s, t in oauth_states.items() if t < cutoff]
-    for s in expired:
+    for s in [k for k, v in oauth_states.items() if v < cutoff]:
         del oauth_states[s]
-
-    scopes = "read:recovery read:sleep read:workout read:cycles read:profile"
 
     params = {
         "client_id": WHOOP_CLIENT_ID,
         "redirect_uri": WHOOP_REDIRECT_URI,
         "response_type": "code",
-        "scope": scopes,
+        "scope": "read:recovery read:sleep read:workout read:cycles read:profile",
         "state": state
     }
 
-    auth_url = f"{WHOOP_AUTH_URL}?{urlencode(params)}"
-
-    return RedirectResponse(url=auth_url)
+    return RedirectResponse(url=f"{WHOOP_AUTH_URL}?{urlencode(params)}")
 
 
-@api.get("/oauth/whoop/callback")
-async def oauth_callback(code: str = None, state: str = None, error: str = None):
+@mcp.custom_route("/oauth/whoop/callback", methods=["GET"])
+async def oauth_callback(request: Request) -> JSONResponse:
     """Handle WHOOP OAuth callback."""
-    if error:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "oauth_error", "message": error}
-        )
+    params = request.query_params
 
-    # Validate state
+    if params.get("error"):
+        return JSONResponse({"error": "oauth_error", "message": params.get("error")}, status_code=400)
+
+    state = params.get("state")
     if not state or state not in oauth_states:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "invalid_state", "message": "Invalid or expired state. Please try again."}
-        )
+        return JSONResponse({"error": "invalid_state", "message": "Invalid or expired state"}, status_code=400)
 
-    # Remove used state
     del oauth_states[state]
+    code = params.get("code")
 
     if not code:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "missing_code", "message": "No authorization code provided"}
-        )
+        return JSONResponse({"error": "missing_code", "message": "No authorization code"}, status_code=400)
 
     try:
-        # Exchange code for tokens
-        print(f"[OAuth] Exchanging code for tokens...")
+        print("[OAuth] Exchanging code for tokens...")
         async with aiohttp.ClientSession() as session:
-            async with session.post(
-                WHOOP_TOKEN_URL,
-                data={
-                    "grant_type": "authorization_code",
-                    "code": code,
-                    "redirect_uri": WHOOP_REDIRECT_URI,
-                    "client_id": WHOOP_CLIENT_ID,
-                    "client_secret": WHOOP_CLIENT_SECRET
-                }
-            ) as response:
-                response_text = await response.text()
-                print(f"[OAuth] Token response status: {response.status}")
+            async with session.post(WHOOP_TOKEN_URL, data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": WHOOP_REDIRECT_URI,
+                "client_id": WHOOP_CLIENT_ID,
+                "client_secret": WHOOP_CLIENT_SECRET
+            }) as response:
+                text = await response.text()
+                print(f"[OAuth] Response status: {response.status}")
 
                 if response.status != 200:
-                    print(f"[OAuth] Token exchange failed: {response_text}")
-                    return JSONResponse(
-                        status_code=400,
-                        content={"error": "token_exchange_failed", "message": response_text}
-                    )
+                    return JSONResponse({"error": "token_exchange_failed", "message": text}, status_code=400)
 
-                import json
-                data = json.loads(response_text)
-                print(f"[OAuth] Token response keys: {list(data.keys())}")
+                data = json.loads(text)
 
-        # Calculate expiry
         expires_at = datetime.now() + timedelta(seconds=data["expires_in"])
-        print(f"[OAuth] Token expires at: {expires_at.isoformat()}")
 
-        # Save token (refresh_token may not always be present)
         await database.save_token(
             access_token=data["access_token"],
             refresh_token=data.get("refresh_token", ""),
@@ -398,37 +276,36 @@ async def oauth_callback(code: str = None, state: str = None, error: str = None)
             scope=data.get("scope")
         )
 
-        print("[OAuth] Token saved successfully!")
-        return {
+        print("[OAuth] Token saved!")
+        return JSONResponse({
             "status": "success",
             "message": "WHOOP connected successfully!",
             "expires_at": expires_at.isoformat()
-        }
+        })
 
     except Exception as e:
-        print(f"[OAuth] Error: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return JSONResponse(
-            status_code=500,
-            content={"error": "callback_error", "message": str(e)}
-        )
+        print(f"[OAuth] Error: {e}")
+        return JSONResponse({"error": "callback_error", "message": str(e)}, status_code=500)
 
 
-# Mount MCP server - FastMCP's streamable_http_app() exposes /mcp internally
-# So we mount at root to get /mcp endpoint
-mcp_app = mcp.streamable_http_app()
+# ============== Startup ==============
 
-# Combine FastAPI and MCP by mounting MCP at root
-api.mount("/", mcp_app)
+async def init():
+    """Initialize database on startup."""
+    print("[Startup] Initializing database...")
+    await database.init_db()
+    print("[Startup] Ready!")
 
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 8000))
-    uvicorn.run(
-        api,
+    import asyncio
+    asyncio.run(init())
+
+    port = int(os.getenv("PORT", 8080))
+    print(f"[Startup] Starting server on port {port}...")
+
+    mcp.run(
+        transport="streamable-http",
         host="0.0.0.0",
-        port=port,
-        proxy_headers=True,
-        forwarded_allow_ips="*"
+        port=port
     )
