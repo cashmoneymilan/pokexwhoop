@@ -435,12 +435,80 @@ async def oauth_callback(request: Request) -> JSONResponse:
         return JSONResponse({"error": "callback_error", "message": str(e)}, status_code=500)
 
 
+# ============== Background Token Refresh ==============
+
+async def background_token_refresh():
+    """Background task that refreshes token every 30 minutes if needed."""
+    import asyncio
+
+    while True:
+        try:
+            await asyncio.sleep(1800)  # 30 minutes
+
+            token = await database.get_token()
+            if not token:
+                print("[Background] No token to refresh")
+                continue
+
+            expires_at = token.get("expires_at")
+            exp_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00")) if expires_at else None
+            now = datetime.now(exp_dt.tzinfo) if exp_dt and exp_dt.tzinfo else datetime.now()
+
+            if exp_dt:
+                hours_left = (exp_dt - now).total_seconds() / 3600
+
+                if hours_left < 2:
+                    print(f"[Background] Token expires in {hours_left:.1f}h, refreshing...")
+                    await whoop_client._refresh_token(token["refresh_token"])
+                    print("[Background] Token refreshed successfully")
+                else:
+                    print(f"[Background] Token valid for {hours_left:.1f}h, no refresh needed")
+
+        except asyncio.CancelledError:
+            print("[Background] Token refresh task cancelled")
+            break
+        except Exception as e:
+            print(f"[Background] Error refreshing token: {e}")
+
+
+async def refresh_token_if_needed():
+    """Check and refresh token immediately on startup."""
+    token = await database.get_token()
+    if not token:
+        print("[Startup] No token found, skipping refresh check")
+        return
+
+    try:
+        expires_at = token.get("expires_at")
+        exp_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00")) if expires_at else None
+        now = datetime.now(exp_dt.tzinfo) if exp_dt and exp_dt.tzinfo else datetime.now()
+
+        if exp_dt:
+            time_left = (exp_dt - now).total_seconds()
+            hours_left = time_left / 3600
+
+            if time_left <= 0:
+                print(f"[Startup] Token expired, attempting refresh...")
+                await whoop_client._refresh_token(token["refresh_token"])
+                print("[Startup] Token refreshed successfully")
+            elif hours_left < 2:
+                print(f"[Startup] Token expires in {hours_left:.1f}h, refreshing...")
+                await whoop_client._refresh_token(token["refresh_token"])
+                print("[Startup] Token refreshed successfully")
+            else:
+                print(f"[Startup] Token valid for {hours_left:.1f}h")
+    except Exception as e:
+        print(f"[Startup] Could not refresh token: {e}")
+
+
 # ============== Startup ==============
 
 async def init():
     """Initialize database on startup."""
     print("[Startup] Initializing database...")
     await database.init_db()
+    print("[Startup] Checking token status...")
+    await refresh_token_if_needed()
     print("[Startup] Ready!")
 
 
@@ -471,12 +539,24 @@ if __name__ == "__main__":
             ]
             return await call_next(request)
 
-    # Lifespan that initializes MCP session manager
+    # Lifespan that initializes MCP session manager and background tasks
     @asynccontextmanager
     async def lifespan(app):
         async with mcp.session_manager.run():
             print("[Startup] MCP session manager started")
+
+            # Start background token refresh task
+            refresh_task = asyncio.create_task(background_token_refresh())
+            print("[Startup] Background token refresh task started (runs every 30 min)")
+
             yield
+
+            # Cancel background task on shutdown
+            refresh_task.cancel()
+            try:
+                await refresh_task
+            except asyncio.CancelledError:
+                pass
             print("[Shutdown] MCP session manager stopped")
 
     # Create wrapper app with middleware and lifespan
