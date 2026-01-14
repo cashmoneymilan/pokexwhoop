@@ -521,8 +521,6 @@ if __name__ == "__main__":
     from starlette.applications import Starlette
     from starlette.routing import Mount
 
-    asyncio.run(init())
-
     port = int(os.getenv("PORT", 8080))
     print(f"[Startup] Starting server on port {port}...")
 
@@ -539,15 +537,24 @@ if __name__ == "__main__":
             ]
             return await call_next(request)
 
-    # Lifespan that initializes MCP session manager and background tasks
+    # Lifespan that initializes everything in the correct event loop
     @asynccontextmanager
     async def lifespan(app):
+        # Initialize database (must be in uvicorn's event loop)
+        print("[Startup] Initializing database...")
+        await database.init_db()
+
+        # Check and refresh token on startup
+        print("[Startup] Checking token status...")
+        await refresh_token_if_needed()
+
         async with mcp.session_manager.run():
             print("[Startup] MCP session manager started")
 
             # Start background token refresh task
             refresh_task = asyncio.create_task(background_token_refresh())
             print("[Startup] Background token refresh task started (runs every 30 min)")
+            print("[Startup] Ready!")
 
             yield
 
@@ -557,6 +564,9 @@ if __name__ == "__main__":
                 await refresh_task
             except asyncio.CancelledError:
                 pass
+
+            # Close whoop client session
+            await whoop_client.close()
             print("[Shutdown] MCP session manager stopped")
 
     # Create wrapper app with middleware and lifespan
