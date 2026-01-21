@@ -59,6 +59,7 @@ class WhoopClient:
                 "refresh_token": refresh_token,
                 "client_id": self.client_id,
                 "client_secret": self.client_secret,
+                "scope": "offline",
             }
         ) as response:
             if response.status != 200:

@@ -371,7 +371,7 @@ async def oauth_start(request: Request) -> RedirectResponse:
         "client_id": WHOOP_CLIENT_ID,
         "redirect_uri": WHOOP_REDIRECT_URI,
         "response_type": "code",
-        "scope": "read:recovery read:sleep read:workout read:cycles read:profile",
+        "scope": "offline read:recovery read:sleep read:workout read:cycles read:profile",
         "state": state
     }
 
