@@ -154,16 +154,26 @@ async def get_week_trends(metric: str) -> dict:
     Get 7-day trends for a specific health metric.
 
     Args:
-        metric: The metric to analyze - "recovery", "strain", or "sleep"
+        metric: The metric to analyze - "recovery", "strain", "sleep", or "hrv"
     """
     try:
-        if metric not in ["recovery", "strain", "sleep"]:
-            return {"error": "invalid_metric", "message": "Metric must be: recovery, strain, or sleep"}
+        if metric not in ["recovery", "strain", "sleep", "hrv"]:
+            return {"error": "invalid_metric", "message": "Metric must be: recovery, strain, sleep, or hrv"}
 
         if metric == "recovery":
             data = await whoop_client.get_recovery(limit=7)
             values = [{"date": normalize_recovery(d)["date"], "value": normalize_recovery(d)["recovery_score"]}
                      for d in data if normalize_recovery(d)]
+        elif metric == "hrv":
+            data = await whoop_client.get_recovery(limit=7)
+            values = []
+            for d in data:
+                normalized = normalize_recovery(d)
+                if normalized and normalized.get("hrv"):
+                    values.append({
+                        "date": normalized["date"],
+                        "value": round(normalized["hrv"], 1)
+                    })
         elif metric == "strain":
             data = await whoop_client.get_cycles(limit=7)
             values = [{"date": normalize_cycle(d)["date"], "value": round(normalize_cycle(d)["strain"], 1)}
@@ -185,12 +195,15 @@ async def get_week_trends(metric: str) -> dict:
         numeric = [v["value"] for v in values]
         avg = round(sum(numeric) / len(numeric), 1)
 
+        # Determine unit based on metric
+        units = {"recovery": "%", "strain": "strain", "sleep": "hours", "hrv": "ms"}
+
         return {
             "metric": metric,
             "period": "7 days",
             "average": avg,
             "data_points": values,
-            "unit": "%" if metric == "recovery" else ("strain" if metric == "strain" else "hours")
+            "unit": units[metric]
         }
 
     except Exception as e:
