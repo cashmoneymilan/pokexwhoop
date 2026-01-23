@@ -149,23 +149,27 @@ async def get_last_sleep() -> dict:
 
 
 @mcp.tool()
-async def get_week_trends(metric: str) -> dict:
+async def get_trends(metric: str, days: int = 7) -> dict:
     """
-    Get 7-day trends for a specific health metric.
+    Get trends for a specific health metric over a custom time period.
 
     Args:
         metric: The metric to analyze - "recovery", "strain", "sleep", or "hrv"
+        days: Number of days to look back (default 7, max 90)
     """
     try:
         if metric not in ["recovery", "strain", "sleep", "hrv"]:
             return {"error": "invalid_metric", "message": "Metric must be: recovery, strain, sleep, or hrv"}
 
+        # Cap at 90 days to avoid excessive API calls
+        days = min(max(1, days), 90)
+
         if metric == "recovery":
-            data = await whoop_client.get_recovery(limit=7)
+            data = await whoop_client.get_recovery(limit=days, days=days)
             values = [{"date": normalize_recovery(d)["date"], "value": normalize_recovery(d)["recovery_score"]}
                      for d in data if normalize_recovery(d)]
         elif metric == "hrv":
-            data = await whoop_client.get_recovery(limit=7)
+            data = await whoop_client.get_recovery(limit=days, days=days)
             values = []
             for d in data:
                 normalized = normalize_recovery(d)
@@ -175,11 +179,11 @@ async def get_week_trends(metric: str) -> dict:
                         "value": round(normalized["hrv"], 1)
                     })
         elif metric == "strain":
-            data = await whoop_client.get_cycles(limit=7)
+            data = await whoop_client.get_cycles(limit=days, days=days)
             values = [{"date": normalize_cycle(d)["date"], "value": round(normalize_cycle(d)["strain"], 1)}
                      for d in data if normalize_cycle(d)]
         else:
-            data = await whoop_client.get_sleep(limit=7)
+            data = await whoop_client.get_sleep(limit=days, days=days)
             values = []
             for d in data:
                 normalized = normalize_sleep(d)
@@ -200,7 +204,7 @@ async def get_week_trends(metric: str) -> dict:
 
         return {
             "metric": metric,
-            "period": "7 days",
+            "period": f"{days} days",
             "average": avg,
             "data_points": values,
             "unit": units[metric]
