@@ -7,6 +7,7 @@ import os
 import json
 import secrets
 from datetime import datetime, timedelta
+from typing import Optional
 from urllib.parse import urlencode
 
 import aiohttp
@@ -49,6 +50,94 @@ mcp = FastMCP(
         enable_dns_rebinding_protection=False
     )
 )
+
+
+# ============== State Classification Helpers ==============
+
+def classify_state(
+    buffer_hours: Optional[float],
+    recovery_score: Optional[float],
+    sleep_efficiency: Optional[float]
+) -> str:
+    """
+    Core state classification logic.
+
+    Primary signal: buffer_hours (commitment proximity)
+    Modifier: recovery_score and sleep_efficiency
+    """
+
+    # If we don't have commitment data, use recovery-only classification
+    if buffer_hours is None:
+        if recovery_score is None:
+            return "unknown"
+        elif recovery_score < 60:
+            return "drift_risk"  # No structure + low recovery = assume drift risk
+        elif recovery_score >= 80 and (sleep_efficiency is None or sleep_efficiency >= 85):
+            return "primed"
+        else:
+            return "anchored"  # Default to middle state without commitment context
+
+    # Primary classification based on buffer hours
+    if buffer_hours <= 1.5:
+        base_state = "urgent"
+    elif buffer_hours <= 3:
+        base_state = "anchored"
+    else:
+        base_state = "drift_risk"
+
+    # Apply modifiers
+    if base_state == "drift_risk" and recovery_score is not None and recovery_score < 60:
+        return "high_drift_risk"
+
+    if base_state == "anchored":
+        if (recovery_score is not None and recovery_score >= 80 and
+            sleep_efficiency is not None and sleep_efficiency >= 85):
+            return "primed"
+
+    return base_state
+
+
+def generate_reasoning(
+    state: str,
+    buffer_hours: Optional[float],
+    recovery_score: Optional[float],
+    sleep_efficiency: Optional[float]
+) -> str:
+    """
+    Generate human-readable explanation for the state classification.
+    Useful for debugging and for the pitch demo.
+    """
+
+    parts = []
+
+    # Buffer hours component
+    if buffer_hours is not None:
+        if buffer_hours <= 1.5:
+            parts.append(f"{buffer_hours:.1f}h until commitment (urgent)")
+        elif buffer_hours <= 3:
+            parts.append(f"{buffer_hours:.1f}h until commitment (structured)")
+        else:
+            parts.append(f"{buffer_hours:.1f}h until commitment (high slack)")
+    else:
+        parts.append("no commitment data provided")
+
+    # Recovery component
+    if recovery_score is not None:
+        if recovery_score < 60:
+            parts.append(f"recovery {recovery_score}% (low)")
+        elif recovery_score >= 80:
+            parts.append(f"recovery {recovery_score}% (high)")
+        else:
+            parts.append(f"recovery {recovery_score}% (moderate)")
+
+    # Sleep efficiency component
+    if sleep_efficiency is not None:
+        if sleep_efficiency >= 85:
+            parts.append(f"sleep efficiency {sleep_efficiency}% (good)")
+        else:
+            parts.append(f"sleep efficiency {sleep_efficiency}% (suboptimal)")
+
+    return " | ".join(parts)
 
 
 # ============== MCP Tools ==============
@@ -212,6 +301,131 @@ async def get_trends(metric: str, days: int = 7) -> dict:
 
     except Exception as e:
         return {"error": str(e), "message": f"Failed to fetch {metric} trends"}
+
+
+@mcp.tool()
+async def get_user_state(
+    next_commitment_time: Optional[str] = None,
+    estimated_wake_time: Optional[str] = None
+) -> dict:
+    """
+    Get the user's current state classification based on WHOOP data and schedule context.
+
+    This is the core intelligence layer that determines how Poke should behave.
+
+    Args:
+        next_commitment_time: ISO format datetime string of next hard commitment (e.g., "2026-01-23T10:00:00")
+        estimated_wake_time: ISO format datetime string of when user woke/will wake (e.g., "2026-01-23T08:30:00")
+
+    Returns:
+        State classification with reasoning and metrics.
+
+    States:
+        - urgent: commitment within 90 min of waking, need immediate action
+        - anchored: commitment 1.5-3 hours away, natural structure exists
+        - drift_risk: commitment 3+ hours away or none, structure may dissolve
+        - high_drift_risk: drift_risk + low recovery, both structure and physiology compromised
+        - primed: anchored + high recovery + good sleep, peak performance state
+    """
+    try:
+        # Fetch WHOOP data
+        recovery_data = await whoop_client.get_recovery(limit=1)
+        sleep_data = await whoop_client.get_sleep(limit=1)
+
+        # Normalize
+        recovery = normalize_recovery(recovery_data[0]) if recovery_data else None
+        sleep = normalize_sleep(sleep_data[0]) if sleep_data else None
+
+        # Extract key metrics (with corrected field names)
+        recovery_score = recovery["recovery_score"] if recovery else None
+        sleep_efficiency = sleep.get("sleep_efficiency") if sleep else None
+        sleep_hours = (sleep.get("total_sleep") / 3600) if sleep and sleep.get("total_sleep") else None
+        hrv = recovery["hrv"] if recovery else None
+        resting_hr = recovery["resting_hr"] if recovery else None
+
+        # Calculate buffer hours if commitment provided
+        buffer_hours = None
+        if next_commitment_time and estimated_wake_time:
+            try:
+                commitment_dt = datetime.fromisoformat(next_commitment_time.replace('Z', '+00:00'))
+                wake_dt = datetime.fromisoformat(estimated_wake_time.replace('Z', '+00:00'))
+                buffer_hours = (commitment_dt - wake_dt).total_seconds() / 3600
+            except (ValueError, TypeError):
+                buffer_hours = None
+
+        # State classification logic
+        state = classify_state(buffer_hours, recovery_score, sleep_efficiency)
+        reasoning = generate_reasoning(state, buffer_hours, recovery_score, sleep_efficiency)
+
+        return {
+            "state": state,
+            "buffer_hours": round(buffer_hours, 1) if buffer_hours is not None else None,
+            "next_commitment_time": next_commitment_time,
+            "estimated_wake_time": estimated_wake_time,
+            "recovery": {
+                "score": recovery_score,
+                "hrv": hrv,
+                "resting_hr": resting_hr
+            },
+            "sleep": {
+                "hours": round(sleep_hours, 1) if sleep_hours else None,
+                "efficiency": round(sleep_efficiency, 1) if sleep_efficiency else None
+            },
+            "reasoning": reasoning,
+            "timestamp": datetime.now().isoformat()
+        }
+
+    except Exception as e:
+        return {
+            "state": "unknown",
+            "error": str(e),
+            "reasoning": "Could not determine state due to data fetch error",
+            "timestamp": datetime.now().isoformat()
+        }
+
+
+@mcp.tool()
+async def get_state_thresholds() -> dict:
+    """
+    Returns the current state classification thresholds.
+    Useful for understanding and debugging the model.
+    """
+    return {
+        "states": {
+            "urgent": {
+                "description": "Commitment within 90 min of waking",
+                "buffer_hours": "<= 1.5",
+                "poke_behavior": "Immediate time math, no fluff, get out the door"
+            },
+            "anchored": {
+                "description": "Commitment 1.5-3 hours away, natural structure exists",
+                "buffer_hours": "1.5 - 3.0",
+                "poke_behavior": "Standard briefing, check-ins every 3-4 hours"
+            },
+            "drift_risk": {
+                "description": "Commitment 3+ hours away or none, structure may dissolve",
+                "buffer_hours": "> 3.0 or none",
+                "poke_behavior": "Offer structure, check-ins every 2 hours, meal prompts"
+            },
+            "high_drift_risk": {
+                "description": "Drift risk + low recovery, both structure and physiology compromised",
+                "condition": "drift_risk AND recovery < 60%",
+                "poke_behavior": "More assertive structure, shorter task blocks, frequent meal prompts"
+            },
+            "primed": {
+                "description": "Anchored + high recovery + good sleep, peak state",
+                "condition": "anchored AND recovery >= 80% AND sleep_efficiency >= 85%",
+                "poke_behavior": "Push hard problems, minimize interruptions, trust self-regulation"
+            }
+        },
+        "thresholds": {
+            "buffer_urgent": 1.5,
+            "buffer_anchored": 3.0,
+            "recovery_low": 60,
+            "recovery_high": 80,
+            "sleep_efficiency_good": 85
+        }
+    }
 
 
 # ============== Custom HTTP Routes ==============
