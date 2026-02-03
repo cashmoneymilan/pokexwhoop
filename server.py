@@ -1248,7 +1248,8 @@ async def root(request: Request) -> JSONResponse:
     """Server info endpoint."""
     return JSONResponse({
         "name": "WHOOP MCP Server",
-        "version": "1.0.0",
+        "version": "2.0.0",
+        "build": "8928ffe-poke-context",
         "status": "running",
         "endpoints": {
             "health": "/health (also refreshes token if expiring)",
