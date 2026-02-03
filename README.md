@@ -96,8 +96,9 @@ Should return:
 ### Step 8: Connect to Poke AI
 
 Configure Poke AI with:
-- **MCP Server URL**: `https://YOUR-DOMAIN/mcp/sse`
-- **API Key Header**: `x-api-key: YOUR_SERVER_API_KEY`
+- **MCP Server URL**: `https://YOUR-DOMAIN/sse`
+
+> **Note:** The server uses SSE transport (MCP 2024-11-05 spec) for compatibility with Poke.
 
 ---
 
@@ -125,8 +126,10 @@ Most recent sleep data: duration, debt, efficiency, disturbances, and sleep stag
 | `/health` | GET | No | Health check |
 | `/oauth/whoop/start` | GET | No | Start OAuth |
 | `/oauth/whoop/callback` | GET | No | OAuth callback |
-| `/mcp/sse` | GET | API Key | MCP connection |
-| `/cron/sync` | POST | API Key | Sync data |
+| `/sse` | GET | No | MCP SSE stream (for Poke) |
+| `/messages` | POST | No | MCP SSE message posting |
+| `/tools` | GET | No | List all MCP tools |
+| `/keep-alive` | GET | No | Token refresh endpoint for cron |
 
 ---
 

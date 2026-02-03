@@ -1249,8 +1249,8 @@ async def root(request: Request) -> JSONResponse:
     """Server info endpoint."""
     return JSONResponse({
         "name": "WHOOP MCP Server v2",
-        "version": "2.1.0",
-        "build": "schema-refresh-v2",
+        "version": "2.2.0",
+        "build": "sse-transport",
         "mcp_server_name": "whoop-mcp-v2",
         "status": "running",
         "tools_count": len(mcp._tool_manager._tools),
@@ -1260,7 +1260,8 @@ async def root(request: Request) -> JSONResponse:
             "keep_alive": "/keep-alive (use with external cron)",
             "tools": "/tools (list all MCP tools - bypasses client caching)",
             "oauth_start": "/oauth/whoop/start",
-            "mcp": "/mcp"
+            "mcp_sse": "/sse (SSE stream - configure Poke to use this)",
+            "mcp_messages": "/messages (SSE message posting)"
         },
         "tip": "Set up a cron job to hit /keep-alive every 30 min to prevent token expiry"
     })
@@ -1591,8 +1592,10 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
     print(f"[Startup] Starting server on port {port}...")
 
-    # Get the ASGI app
-    mcp_app = mcp.streamable_http_app()
+    # Create SSE transport app for Poke compatibility
+    # SSE (2024-11-05) exposes: /sse (GET) and /messages (POST)
+    # When mounted at /mcp, this gives /mcp/sse which Poke expects
+    sse_app = mcp.sse_app()
 
     # Wrap with middleware to fix host header for Railway
     class HostFixMiddleware(BaseHTTPMiddleware):
@@ -1622,6 +1625,8 @@ if __name__ == "__main__":
             refresh_task = asyncio.create_task(background_token_refresh())
             print("[Startup] Background token refresh task started (runs every 30 min)")
             print("[Startup] Ready!")
+            print("[Startup] MCP SSE transport active")
+            print("[Startup] Endpoints: /sse (stream), /messages (post)")
 
             yield
 
@@ -1637,8 +1642,13 @@ if __name__ == "__main__":
             print("[Shutdown] MCP session manager stopped")
 
     # Create wrapper app with middleware and lifespan
+    # SSE app includes custom routes (/, /health, /tools, etc.) plus SSE endpoints (/sse, /messages)
+    # Mount at / so all routes work at expected paths
+    # Poke should connect to /sse (update README accordingly)
     wrapper = Starlette(
-        routes=[Mount("/", app=mcp_app)],
+        routes=[
+            Mount("/", app=sse_app),
+        ],
         middleware=[Middleware(HostFixMiddleware)],
         lifespan=lifespan
     )
