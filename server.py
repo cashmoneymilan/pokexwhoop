@@ -43,8 +43,9 @@ oauth_states = {}
 
 # Initialize FastMCP server with settings
 # Disable DNS rebinding protection for Railway deployment
+# Server name changed to force Poke to refresh cached schema
 mcp = FastMCP(
-    "whoop-mcp-server",
+    "whoop-mcp-v2",
     instructions="Use these tools to get WHOOP health data including recovery scores, sleep metrics, strain, and weekly trends.",
     transport_security=TransportSecuritySettings(
         enable_dns_rebinding_protection=False
@@ -1247,14 +1248,17 @@ async def process_opt_out(keyword: str, duration_hours: Optional[float] = None) 
 async def root(request: Request) -> JSONResponse:
     """Server info endpoint."""
     return JSONResponse({
-        "name": "WHOOP MCP Server",
-        "version": "2.0.0",
-        "build": "8928ffe-poke-context",
+        "name": "WHOOP MCP Server v2",
+        "version": "2.1.0",
+        "build": "schema-refresh-v2",
+        "mcp_server_name": "whoop-mcp-v2",
         "status": "running",
+        "tools_count": len(mcp._tool_manager._tools),
         "endpoints": {
             "health": "/health (also refreshes token if expiring)",
             "token_status": "/token-status (check token expiry)",
             "keep_alive": "/keep-alive (use with external cron)",
+            "tools": "/tools (list all MCP tools - bypasses client caching)",
             "oauth_start": "/oauth/whoop/start",
             "mcp": "/mcp"
         },
@@ -1341,6 +1345,24 @@ async def token_status(request: Request) -> JSONResponse:
             "error": str(e),
             "expires_at": expires_at
         })
+
+
+@mcp.custom_route("/tools", methods=["GET"])
+async def list_tools(request: Request) -> JSONResponse:
+    """List all MCP tools - bypasses client caching."""
+    tools = []
+    for name, tool in mcp._tool_manager._tools.items():
+        desc = tool.description or ""
+        tools.append({
+            "name": name,
+            "description": desc[:100] + "..." if len(desc) > 100 else desc
+        })
+    return JSONResponse({
+        "count": len(tools),
+        "tools": tools,
+        "version": "2.1.0",
+        "mcp_server_name": "whoop-mcp-v2"
+    })
 
 
 @mcp.custom_route("/keep-alive", methods=["GET"])
