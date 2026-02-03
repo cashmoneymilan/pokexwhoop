@@ -1618,28 +1618,27 @@ if __name__ == "__main__":
         print("[Startup] Checking token status...")
         await refresh_token_if_needed()
 
-        async with mcp.session_manager.run():
-            print("[Startup] MCP session manager started")
+        # SSE transport doesn't use session_manager (that's only for streamable HTTP)
+        print("[Startup] MCP SSE transport active")
+        print("[Startup] Endpoints: /sse (stream), /messages (post)")
 
-            # Start background token refresh task
-            refresh_task = asyncio.create_task(background_token_refresh())
-            print("[Startup] Background token refresh task started (runs every 30 min)")
-            print("[Startup] Ready!")
-            print("[Startup] MCP SSE transport active")
-            print("[Startup] Endpoints: /sse (stream), /messages (post)")
+        # Start background token refresh task
+        refresh_task = asyncio.create_task(background_token_refresh())
+        print("[Startup] Background token refresh task started (runs every 30 min)")
+        print("[Startup] Ready!")
 
-            yield
+        yield
 
-            # Cancel background task on shutdown
-            refresh_task.cancel()
-            try:
-                await refresh_task
-            except asyncio.CancelledError:
-                pass
+        # Cancel background task on shutdown
+        refresh_task.cancel()
+        try:
+            await refresh_task
+        except asyncio.CancelledError:
+            pass
 
-            # Close whoop client session
-            await whoop_client.close()
-            print("[Shutdown] MCP session manager stopped")
+        # Close whoop client session
+        await whoop_client.close()
+        print("[Shutdown] Server stopped")
 
     # Create wrapper app with middleware and lifespan
     # SSE app includes custom routes (/, /health, /tools, etc.) plus SSE endpoints (/sse, /messages)
