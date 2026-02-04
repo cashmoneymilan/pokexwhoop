@@ -535,7 +535,10 @@ async def get_state_thresholds() -> dict:
 # ============== Priority 1: Unified Context Tools ==============
 
 @mcp.tool()
-async def get_poke_context() -> dict:
+async def get_poke_context(
+    next_commitment_time: Optional[str] = None,
+    calendar_context: Optional[str] = None
+) -> dict:
     """
     THE key tool Poke calls at every trigger.
 
@@ -544,7 +547,12 @@ async def get_poke_context() -> dict:
     - Check-in status: last sent, unanswered count
     - State context: current state, recent changes
     - Opt-out status
+    - Calendar: upcoming commitments and buffer time
     - Recommendation: whether to send, suggested type
+
+    Args:
+        next_commitment_time: ISO timestamp of user's next calendar commitment (optional)
+        calendar_context: Brief description of upcoming events (optional)
 
     Call this at the START of every hourly trigger before deciding to send a message.
     """
@@ -552,6 +560,17 @@ async def get_poke_context() -> dict:
         ctx = await database.get_poke_context()
         now = datetime.now()
         today = now.strftime("%Y-%m-%d")
+
+        # Calculate buffer to next commitment
+        buffer_hours = None
+        if next_commitment_time:
+            try:
+                commitment_dt = datetime.fromisoformat(next_commitment_time.replace('Z', '+00:00'))
+                buffer_hours = (commitment_dt - now).total_seconds() / 3600
+                if buffer_hours < 0:
+                    buffer_hours = None  # Commitment is in the past
+            except:
+                pass
 
         # Initialize defaults if no context exists
         if not ctx:
@@ -689,6 +708,11 @@ async def get_poke_context() -> dict:
                 "reason": "; ".join(reason_parts) if reason_parts else "Ready to send",
                 "suggested_type": suggested_type if can_send else None,
                 "suggested_wait": suggested_wait
+            },
+            "calendar": {
+                "next_commitment_time": next_commitment_time,
+                "buffer_hours": round(buffer_hours, 1) if buffer_hours else None,
+                "calendar_context": calendar_context
             },
             "timestamp": now.isoformat()
         }
@@ -1249,7 +1273,7 @@ async def root(request: Request) -> JSONResponse:
     """Server info endpoint."""
     return JSONResponse({
         "name": "WHOOP MCP Server v2",
-        "version": "2.2.0",
+        "version": "2.3.0",
         "build": "sse-transport",
         "mcp_server_name": "whoop-mcp-v2",
         "status": "running",
@@ -1261,7 +1285,10 @@ async def root(request: Request) -> JSONResponse:
             "tools": "/tools (list all MCP tools - bypasses client caching)",
             "oauth_start": "/oauth/whoop/start",
             "mcp_sse": "/sse (SSE stream - configure Poke to use this)",
-            "mcp_messages": "/messages (SSE message posting)"
+            "mcp_messages": "/messages (SSE message posting)",
+            "api_poke_context": "/api/poke-context (GET - for automation without MCP)",
+            "api_record_checkin": "/api/record-checkin (POST - log check-in sent)",
+            "api_record_activity": "/api/record-activity (POST - log user activity)"
         },
         "tip": "Set up a cron job to hit /keep-alive every 30 min to prevent token expiry"
     })
@@ -1419,6 +1446,63 @@ async def keep_alive(request: Request) -> JSONResponse:
             "message": str(e),
             "timestamp": datetime.now().isoformat()
         }, status_code=500)
+
+
+# ============== HTTP API for Automation (bypasses MCP) ==============
+
+@mcp.custom_route("/api/poke-context", methods=["GET"])
+async def api_poke_context(request: Request) -> JSONResponse:
+    """
+    HTTP endpoint for Poke automation to get context without MCP.
+    Same data as get_poke_context() MCP tool.
+
+    Query params:
+    - next_commitment_time: ISO timestamp of next calendar event (optional)
+    - calendar_context: Brief description of upcoming events (optional)
+    """
+    params = request.query_params
+    result = await get_poke_context(
+        next_commitment_time=params.get("next_commitment_time"),
+        calendar_context=params.get("calendar_context")
+    )
+    return JSONResponse(result)
+
+
+@mcp.custom_route("/api/record-checkin", methods=["POST"])
+async def api_record_checkin(request: Request) -> JSONResponse:
+    """
+    HTTP endpoint to record check-in sent.
+
+    Query params:
+    - checkin_type: Type of check-in (default: "energy_check")
+    - trigger_source: What triggered this (default: "hourly")
+    - user_state: Current user state (optional)
+    - recovery_score: Current recovery score (optional)
+    """
+    params = request.query_params
+    recovery = params.get("recovery_score")
+    result = await record_checkin_sent(
+        checkin_type=params.get("checkin_type", "energy_check"),
+        trigger_source=params.get("trigger_source", "hourly"),
+        user_state=params.get("user_state"),
+        recovery_score=int(recovery) if recovery else None
+    )
+    return JSONResponse(result)
+
+
+@mcp.custom_route("/api/record-activity", methods=["POST"])
+async def api_record_activity(request: Request) -> JSONResponse:
+    """
+    HTTP endpoint to record user activity.
+
+    Query params:
+    - response_quality: Quality of response (default: "passive")
+    """
+    params = request.query_params
+    result = await record_user_activity(
+        response_quality=params.get("response_quality", "passive")
+    )
+    return JSONResponse(result)
 
 
 @mcp.custom_route("/oauth/whoop/start", methods=["GET"])
@@ -1584,8 +1668,6 @@ if __name__ == "__main__":
     import asyncio
     import uvicorn
     from contextlib import asynccontextmanager
-    from starlette.middleware import Middleware
-    from starlette.middleware.base import BaseHTTPMiddleware
     from starlette.applications import Starlette
     from starlette.routing import Mount
 
@@ -1596,16 +1678,6 @@ if __name__ == "__main__":
     # SSE (2024-11-05) exposes: /sse (GET) and /messages (POST)
     # When mounted at /mcp, this gives /mcp/sse which Poke expects
     sse_app = mcp.sse_app()
-
-    # Wrap with middleware to fix host header for Railway
-    class HostFixMiddleware(BaseHTTPMiddleware):
-        async def dispatch(self, request, call_next):
-            # Override scope to use localhost for internal validation
-            request.scope["headers"] = [
-                (b"host", b"localhost") if k == b"host" else (k, v)
-                for k, v in request.scope["headers"]
-            ]
-            return await call_next(request)
 
     # Lifespan that initializes everything in the correct event loop
     @asynccontextmanager
@@ -1640,15 +1712,15 @@ if __name__ == "__main__":
         await whoop_client.close()
         print("[Shutdown] Server stopped")
 
-    # Create wrapper app with middleware and lifespan
+    # Create Starlette app with lifespan
     # SSE app includes custom routes (/, /health, /tools, etc.) plus SSE endpoints (/sse, /messages)
     # Mount at / so all routes work at expected paths
-    # Poke should connect to /sse (update README accordingly)
+    # DNS rebinding protection is disabled via TransportSecuritySettings, so no host header middleware needed
+    # Poke should connect to /sse
     wrapper = Starlette(
         routes=[
             Mount("/", app=sse_app),
         ],
-        middleware=[Middleware(HostFixMiddleware)],
         lifespan=lifespan
     )
 
