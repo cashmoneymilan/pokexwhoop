@@ -1,148 +1,176 @@
-# WHOOP MCP Server
+# WHOOP MCP Server for Poke AI
 
-A hosted MCP (Model Context Protocol) server that connects to the WHOOP API and exposes health metrics as tools for Poke AI.
+A hosted MCP server that connects to the WHOOP API and exposes health metrics + context tools for Poke AI's hourly automation.
 
 ## Features
 
 - OAuth 2.0 authentication with WHOOP
-- Automatic token refresh
-- MCP-compatible SSE transport
-- 4 health data tools for Poke AI
-- SQLite database (no external service needed)
-- Health monitoring endpoint
+- Automatic token refresh (background task + /keep-alive endpoint)
+- MCP-compatible SSE transport for Poke
+- **HTTP API endpoints** for automation (no MCP needed)
+- 14 tools: health data, state classification, engagement tracking
+- SQLite database with Turso cloud sync
+- Configurable thresholds for state classification
 
-## Prerequisites
+## Quick Start
 
-1. A [WHOOP](https://www.whoop.com/) account with an active membership
-2. A [GitHub](https://github.com/) account
-3. A [Railway](https://railway.app/) account
-4. Access to the [WHOOP Developer Portal](https://developer.whoop.com/)
+### 1. Register WHOOP Developer App
 
----
+1. Go to [WHOOP Developer Portal](https://developer.whoop.com/)
+2. Create application, note **Client ID** and **Client Secret**
+3. Leave Redirect URI blank for now
 
-## Setup Instructions
+### 2. Deploy to Railway
 
-### Step 1: Register a WHOOP Developer Application
+1. Fork this repo to your GitHub
+2. Go to [Railway](https://railway.app/) → **New Project** → **Deploy from GitHub**
+3. Select your repo, wait for build
 
-1. Go to the [WHOOP Developer Portal](https://developer.whoop.com/)
-2. Sign in with your WHOOP account
-3. Click **"Create Application"**
-4. Fill in:
-   - **App Name**: `Poke AI Integration`
-   - **Description**: Personal health data integration
-   - **Redirect URI**: Leave blank for now
-5. Submit and wait for approval
-6. Note your **Client ID** and **Client Secret**
+### 3. Configure Railway
 
-### Step 2: Deploy to Railway
-
-1. Fork or push this repo to your GitHub
-2. Go to [Railway](https://railway.app/) and sign in
-3. Click **"New Project"** → **"Deploy from GitHub repo"**
-4. Select your repository
-5. Wait for the build to complete
-
-### Step 3: Get Your Domain
-
-1. In Railway, click on your service
-2. Go to **Settings** → **Networking** → **Public Networking**
-3. Click **"Generate Domain"**
-4. Copy your domain (e.g., `pokexwhoop-production.up.railway.app`)
-
-### Step 4: Configure Environment Variables
-
-In Railway, go to your service → **Variables** tab and add:
+In Railway → **Variables**, add:
 
 | Variable | Value |
 |----------|-------|
-| `WHOOP_CLIENT_ID` | Your Client ID from WHOOP |
-| `WHOOP_CLIENT_SECRET` | Your Client Secret from WHOOP |
+| `WHOOP_CLIENT_ID` | Your Client ID |
+| `WHOOP_CLIENT_SECRET` | Your Client Secret |
 | `WHOOP_REDIRECT_URI` | `https://YOUR-DOMAIN/oauth/whoop/callback` |
 | `APP_BASE_URL` | `https://YOUR-DOMAIN` |
-| `SERVER_API_KEY` | Generate with `openssl rand -hex 32` |
+| `TURSO_DATABASE_URL` | Your Turso database URL |
+| `TURSO_AUTH_TOKEN` | Your Turso auth token |
 
-### Step 5: Update WHOOP Redirect URI
+### 4. Update WHOOP Redirect URI
 
-1. Go back to [WHOOP Developer Portal](https://developer.whoop.com/)
-2. Edit your application
-3. Set **Redirect URI** to: `https://YOUR-DOMAIN/oauth/whoop/callback`
-4. Save
-
-### Step 6: Authorize Your WHOOP Account
-
-Visit:
+In WHOOP Developer Portal, set Redirect URI to:
 ```
-https://YOUR-DOMAIN/oauth/whoop/start
+https://YOUR-DOMAIN/oauth/whoop/callback
 ```
 
-Log in and authorize. You should see "WHOOP Connected".
+### 5. Authorize
 
-### Step 7: Verify
+Visit `https://YOUR-DOMAIN/oauth/whoop/start` and log in.
 
-Check the health endpoint:
+### 6. Connect Poke
+
+Configure Poke with MCP Server URL:
 ```
-https://YOUR-DOMAIN/health
+https://YOUR-DOMAIN/sse
 ```
 
-Should return:
+---
+
+## HTTP API (for Automation)
+
+These endpoints work without MCP - perfect for hourly automation.
+
+### GET `/api/poke-context`
+
+Get all context for deciding whether/how to check in.
+
+```bash
+curl https://YOUR-DOMAIN/api/poke-context
+```
+
+Response:
 ```json
 {
-  "status": "ok",
-  "database": true,
-  "tokenPresent": true
+  "wake_status": {
+    "user_active_today": true,
+    "hours_since_activity": 2.5
+  },
+  "checkin_status": {
+    "hours_since_checkin": 1.2,
+    "unanswered_count": 0
+  },
+  "state_context": {
+    "current": "anchored",
+    "changed_recently": false
+  },
+  "recommendation": {
+    "can_send": true,
+    "context": "User active today; 2.5h since last check-in",
+    "suggested_type": "energy_check"
+  },
+  "calendar": {
+    "buffer_hours": null
+  }
 }
 ```
 
-### Step 8: Connect to Poke AI
+Optional query params:
+- `next_commitment_time` - ISO timestamp of next calendar event
+- `calendar_context` - Brief description of upcoming events
 
-Configure Poke AI with:
-- **MCP Server URL**: `https://YOUR-DOMAIN/sse`
+### POST `/api/record-checkin`
 
-> **Note:** The server uses SSE transport (MCP 2024-11-05 spec) for compatibility with Poke.
+Log that a check-in was sent.
+
+Query params:
+- `checkin_type` - morning_briefing, meal_prompt, energy_check, task_check, etc.
+- `trigger_source` - hourly, recovery, scheduled, reactive
+
+### POST `/api/record-activity`
+
+Log user response.
+
+Query params:
+- `response_quality` - substantive, passive, tangential, emoji_only, opt_out, initiation
 
 ---
 
 ## MCP Tools
 
-### `get_today_summary`
-Today's recovery, strain, sleep, HRV, and recommended strain range.
+### Health Data
+- `get_today_summary` - Recovery, strain, sleep, HRV, recommendations
+- `get_latest_recovery` - Recovery score, HRV, resting HR, state
+- `get_last_sleep` - Duration, debt, efficiency, stages
+- `get_trends` - Historical data for any metric (recovery, strain, sleep, hrv)
 
-### `get_latest_recovery`
-Most recent recovery score, HRV, resting heart rate, and state (green/yellow/red).
+### State Classification
+- `get_user_state` - Classify user state (urgent, anchored, drift_risk, primed)
+- `get_state_thresholds` - View current threshold settings
+- `update_thresholds` - Adjust classification thresholds
 
-### `get_last_sleep`
-Most recent sleep data: duration, debt, efficiency, disturbances, and sleep stages.
+### Poke Context
+- `get_poke_context` - All context for check-in decisions
+- `record_user_activity` - Log user responses
+- `record_checkin_sent` - Log check-ins sent
+- `process_opt_out` - Handle user opt-out requests
 
-### `get_week_trends`
-7-day trends for `recovery`, `strain`, or `sleep`. Returns average, trend direction, and outliers.
-
----
-
-## API Endpoints
-
-| Endpoint | Method | Auth | Description |
-|----------|--------|------|-------------|
-| `/` | GET | No | Server info |
-| `/health` | GET | No | Health check |
-| `/oauth/whoop/start` | GET | No | Start OAuth |
-| `/oauth/whoop/callback` | GET | No | OAuth callback |
-| `/sse` | GET | No | MCP SSE stream (for Poke) |
-| `/messages` | POST | No | MCP SSE message posting |
-| `/tools` | GET | No | List all MCP tools |
-| `/keep-alive` | GET | No | Token refresh endpoint for cron |
+### Analytics
+- `get_engagement_insights` - Response rates, best hours, recommendations
+- `get_day_flow_patterns` - State transition patterns
+- `validate_today_data` - Check for data anomalies
 
 ---
 
-## Troubleshooting
+## All Endpoints
 
-**"No WHOOP token found"**
-→ Visit `/oauth/whoop/start` to authorize
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | GET | Server info |
+| `/health` | GET | Health check + token refresh |
+| `/token-status` | GET | Detailed token expiry info |
+| `/keep-alive` | GET | Proactive token refresh (for cron) |
+| `/tools` | GET | List all MCP tools |
+| `/sse` | GET | MCP SSE stream (for Poke) |
+| `/messages` | POST | MCP message posting |
+| `/api/poke-context` | GET | Context for automation |
+| `/api/record-checkin` | POST | Log check-in sent |
+| `/api/record-activity` | POST | Log user activity |
+| `/oauth/whoop/start` | GET | Start OAuth flow |
+| `/oauth/whoop/callback` | GET | OAuth callback |
 
-**"Invalid API key"**
-→ Check `x-api-key` header matches `SERVER_API_KEY`
+---
 
-**Health shows `tokenPresent: false`**
-→ Re-authorize at `/oauth/whoop/start`
+## Token Management
+
+The server automatically refreshes tokens:
+1. **Background task** - Checks every 30 minutes
+2. **On API call** - Refreshes if expired
+3. **Health endpoint** - Refreshes if < 1 hour left
+
+For extra reliability, set up a cron job to hit `/keep-alive` every 30 minutes.
 
 ---
 
@@ -153,10 +181,10 @@ Most recent sleep data: duration, debt, efficiency, disturbances, and sleep stag
 | `WHOOP_CLIENT_ID` | Yes | WHOOP OAuth Client ID |
 | `WHOOP_CLIENT_SECRET` | Yes | WHOOP OAuth Client Secret |
 | `WHOOP_REDIRECT_URI` | Yes | OAuth callback URL |
-| `SERVER_API_KEY` | Yes | API key for protected endpoints |
-| `APP_BASE_URL` | Yes | Public URL of your server |
-| `DB_PATH` | No | SQLite path (default: `./data/whoop.db`) |
-| `PORT` | No | Server port (default: 3000) |
+| `APP_BASE_URL` | Yes | Public URL of server |
+| `TURSO_DATABASE_URL` | Yes | Turso database URL |
+| `TURSO_AUTH_TOKEN` | Yes | Turso auth token |
+| `PORT` | No | Server port (default: 8080) |
 
 ## License
 
