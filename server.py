@@ -1253,7 +1253,7 @@ async def root(request: Request) -> JSONResponse:
     """Server info endpoint."""
     return JSONResponse({
         "name": "WHOOP MCP Server v2",
-        "version": "2.3.0",
+        "version": "2.3.1",
         "build": "sse-transport",
         "mcp_server_name": "whoop-mcp-v2",
         "status": "running",
