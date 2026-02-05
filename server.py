@@ -626,57 +626,39 @@ async def get_poke_context(
             hours_in_current_state = (now - change_time.replace(tzinfo=None)).total_seconds() / 3600
             state_changed_recently = hours_in_current_state < 2  # Changed in last 2 hours
 
-        # Generate recommendation
+        # Generate recommendation - always allow sending, Poke decides
         unanswered = ctx.get("checkins_since_response", 0)
-        can_send = True
+        can_send = True  # No limits - Poke decides when to send
         reason_parts = []
         suggested_type = "energy_check"  # Default
-        suggested_wait = False
 
-        # Check opt-out first
+        # Build context info (no longer blocking, just informational)
         if opt_out_active:
-            can_send = False
-            reason_parts.append(f"User opted out until {opt_out_until}")
-            suggested_wait = True
-
-        # Check wake status
-        elif not user_active_today and now.hour < 10:
-            can_send = False
-            reason_parts.append("User not confirmed awake yet (before 10am)")
-            suggested_wait = True
-
-        # Check unanswered count
-        elif unanswered >= 2:
-            can_send = False
+            reason_parts.append(f"Note: User opted out until {opt_out_until}")
+        if not user_active_today:
+            reason_parts.append("User not yet active today")
+        if unanswered > 0:
             reason_parts.append(f"{unanswered} unanswered check-ins")
-            suggested_wait = True
+        if hours_since_checkin is not None:
+            reason_parts.append(f"{hours_since_checkin:.1f}h since last check-in")
 
-        # Check time since last check-in
-        elif hours_since_checkin is not None and hours_since_checkin < 1.5:
-            can_send = False
-            reason_parts.append(f"Only {hours_since_checkin:.1f}h since last check-in")
-            suggested_wait = True
+        # Positive signals
+        if user_active_today:
+            reason_parts.append("User active today")
+        if ctx.get("last_response_quality") == "substantive":
+            reason_parts.append("Last response was substantive")
+        if state_changed_recently and ctx.get("current_state") in ["anchored", "primed"]:
+            reason_parts.append("State recently improved")
 
-        # If we can send, build positive reason
-        if can_send:
-            if user_active_today:
-                reason_parts.append("User active today")
-            if ctx.get("last_response_quality") == "substantive":
-                reason_parts.append("Last response was substantive")
-            if state_changed_recently and ctx.get("current_state") in ["anchored", "primed"]:
-                reason_parts.append("State recently improved")
-            if hours_since_checkin and hours_since_checkin > 3:
-                reason_parts.append(f"{hours_since_checkin:.1f}h since last check-in")
-
-            # Suggest message type based on context
-            if now.hour < 10 and user_active_today:
-                suggested_type = "morning_briefing"
-            elif now.hour in [12, 13, 18, 19]:
-                suggested_type = "meal_prompt"
-            elif ctx.get("current_state") in ["drift_risk", "high_drift_risk"]:
-                suggested_type = "task_check"
-            elif ctx.get("current_state") == "anchored":
-                suggested_type = "commitment_reminder"
+        # Suggest message type based on context
+        if now.hour < 10:
+            suggested_type = "morning_briefing"
+        elif now.hour in [12, 13, 18, 19]:
+            suggested_type = "meal_prompt"
+        elif ctx.get("current_state") in ["drift_risk", "high_drift_risk"]:
+            suggested_type = "task_check"
+        elif ctx.get("current_state") == "anchored":
+            suggested_type = "commitment_reminder"
 
         return {
             "wake_status": {
@@ -704,10 +686,9 @@ async def get_poke_context(
                 "reason": ctx.get("opt_out_reason") if opt_out_active else None
             },
             "recommendation": {
-                "can_send": can_send,
-                "reason": "; ".join(reason_parts) if reason_parts else "Ready to send",
-                "suggested_type": suggested_type if can_send else None,
-                "suggested_wait": suggested_wait
+                "can_send": True,  # Always true - no limits, Poke decides
+                "context": "; ".join(reason_parts) if reason_parts else "Ready to send",
+                "suggested_type": suggested_type
             },
             "calendar": {
                 "next_commitment_time": next_commitment_time,
@@ -722,9 +703,8 @@ async def get_poke_context(
             "error": str(e),
             "recommendation": {
                 "can_send": True,
-                "reason": "Error fetching context, defaulting to allow",
-                "suggested_type": "energy_check",
-                "suggested_wait": False
+                "context": "Error fetching context",
+                "suggested_type": "energy_check"
             },
             "timestamp": datetime.now().isoformat()
         }
