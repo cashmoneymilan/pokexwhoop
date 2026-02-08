@@ -540,9 +540,16 @@ async def get_poke_context(
     calendar_context: Optional[str] = None
 ) -> dict:
     """
-    THE key tool Poke calls at every trigger.
+    THE key tool Poke calls at every trigger — one-stop-shop for all context.
+
+    Fetches FRESH WHOOP data (recovery, sleep, HRV) on every call and runs
+    state classification with live metrics. No need to call separate WHOOP
+    tools or access WHOOP through subagent types.
 
     Returns comprehensive context including:
+    - whoop_data: live recovery score, HRV, resting HR, sleep hours/efficiency,
+      state classification, and reasoning. Null if WHOOP fetch fails.
+    - whoop_error: error message if WHOOP data couldn't be fetched (null otherwise)
     - Wake status: whether user is confirmed awake today
     - Check-in status: last sent, unanswered count
     - State context: current state, recent changes
@@ -554,12 +561,87 @@ async def get_poke_context(
         next_commitment_time: ISO timestamp of user's next calendar commitment (optional)
         calendar_context: Brief description of upcoming events (optional)
 
-    Call this at the START of every hourly trigger before deciding to send a message.
+    AUTOMATION NOTE: Call this single tool to get ALL data needed for check-ins.
+    Do NOT try to access WHOOP data through subagent types — everything is in
+    the whoop_data field of the response. After sending a check-in, call
+    record_checkin_sent with the checkin_type and trigger_source.
     """
     try:
         ctx = await database.get_poke_context()
         now = datetime.now()
         today = now.strftime("%Y-%m-%d")
+
+        # ---- Fetch fresh WHOOP data ----
+        whoop_data = None
+        whoop_error = None
+        try:
+            recovery_data = await whoop_client.get_recovery(limit=1)
+            sleep_data = await whoop_client.get_sleep(limit=1)
+
+            recovery = normalize_recovery(recovery_data[0]) if recovery_data else None
+            sleep = normalize_sleep(sleep_data[0]) if sleep_data else None
+
+            recovery_score = recovery["recovery_score"] if recovery else None
+            sleep_efficiency = sleep.get("sleep_efficiency") if sleep else None
+            sleep_hours = (sleep.get("total_sleep") / 3600) if sleep and sleep.get("total_sleep") else None
+            hrv = recovery["hrv"] if recovery else None
+            resting_hr = recovery["resting_hr"] if recovery else None
+
+            # Calculate buffer to next commitment (needed for state classification)
+            buffer_hours_for_state = None
+            if next_commitment_time:
+                try:
+                    commitment_dt = datetime.fromisoformat(next_commitment_time.replace('Z', '+00:00'))
+                    bh = (commitment_dt - now).total_seconds() / 3600
+                    if bh > 0:
+                        buffer_hours_for_state = bh
+                except (ValueError, TypeError):
+                    pass
+
+            # Run state classification with fresh data
+            settings = await database.get_user_settings()
+            state = await classify_state_async(buffer_hours_for_state, recovery_score, sleep_efficiency, settings)
+            reasoning = generate_reasoning(state, buffer_hours_for_state, recovery_score, sleep_efficiency)
+
+            # Update stored state in database
+            previous_state = ctx.get("current_state") if ctx else None
+            state_changed = previous_state is not None and previous_state != state
+            try:
+                if state_changed:
+                    trigger = "time_passed"
+                    if next_commitment_time:
+                        trigger = "commitment_approaching"
+                    elif recovery_score and (not ctx or recovery_score != ctx.get("last_recovery_score")):
+                        trigger = "recovery_change"
+                    await database.log_state_transition(
+                        from_state=previous_state,
+                        to_state=state,
+                        trigger=trigger,
+                        recovery_at_transition=recovery_score
+                    )
+                await database.update_poke_context({
+                    "current_state": state,
+                    "previous_state": previous_state,
+                    "state_changed_at": datetime.now() if state_changed else (ctx.get("state_changed_at") if ctx else datetime.now())
+                })
+            except Exception as ctx_err:
+                print(f"[get_poke_context] State update error (non-fatal): {ctx_err}")
+
+            whoop_data = {
+                "recovery_score": recovery_score,
+                "hrv": round(hrv, 1) if hrv else None,
+                "resting_hr": resting_hr,
+                "sleep_hours": round(sleep_hours, 1) if sleep_hours else None,
+                "sleep_efficiency": round(sleep_efficiency, 1) if sleep_efficiency else None,
+                "state": state,
+                "reasoning": reasoning
+            }
+
+            # Refresh ctx after state update
+            ctx = await database.get_poke_context()
+        except Exception as whoop_err:
+            print(f"[get_poke_context] WHOOP fetch failed (non-fatal): {whoop_err}")
+            whoop_error = str(whoop_err)
 
         # Calculate buffer to next commitment
         buffer_hours = None
@@ -695,6 +777,8 @@ async def get_poke_context(
                 "buffer_hours": round(buffer_hours, 1) if buffer_hours else None,
                 "calendar_context": calendar_context
             },
+            "whoop_data": whoop_data,
+            "whoop_error": whoop_error,
             "timestamp": now.isoformat()
         }
 
