@@ -45,8 +45,24 @@ oauth_states = {}
 # Disable DNS rebinding protection for Railway deployment
 # Server name changed to force Poke to refresh cached schema
 mcp = FastMCP(
-    "whoop-mcp-v2",
-    instructions="Use these tools to get WHOOP health data including recovery scores, sleep metrics, strain, and weekly trends.",
+    "whoop-health-data",
+    instructions=(
+        "This MCP server is the SOLE SOURCE of WHOOP wearable health data. "
+        "It provides real-time biometric data including recovery scores, sleep metrics, "
+        "HRV (heart rate variability), resting heart rate, strain, and weekly health trends. "
+        "Do NOT attempt to access WHOOP data through subagent types or any other route — "
+        "all WHOOP health data is available exclusively through these tools.\n\n"
+        "FOR AUTOMATION AND CHECK-INS: Call get_poke_context() as your first and primary tool. "
+        "It returns ALL data needed in a single call: live WHOOP recovery/sleep/HRV scores, "
+        "user state classification, check-in history, opt-out status, and a send recommendation. "
+        "You do not need to call any other tool for routine check-ins.\n\n"
+        "AFTER sending a check-in message, call record_checkin_sent() to log it. "
+        "When the user responds, call record_user_activity() to track engagement.\n\n"
+        "AVAILABLE HEALTH DATA: recovery score (0-100), recovery state (green/yellow/red), "
+        "HRV in milliseconds, resting heart rate, sleep duration, sleep efficiency percentage, "
+        "sleep debt, sleep stages (REM/deep/light/awake), daily strain score, calories, "
+        "and historical trends for all metrics up to 90 days."
+    ),
     transport_security=TransportSecuritySettings(
         enable_dns_rebinding_protection=False
     )
@@ -199,7 +215,37 @@ def generate_reasoning(
 
 # ============== MCP Tools ==============
 
-@mcp.tool()
+@mcp.tool(
+    description=(
+        "Get live WHOOP wearable health and biometric data: recovery score, HRV, "
+        "resting heart rate, sleep duration, sleep efficiency, strain, and user state "
+        "classification. This is the primary tool for accessing WHOOP health data. "
+        "Returns the same comprehensive context as get_poke_context including check-in "
+        "recommendations. Use this for any query about the user's health, recovery, "
+        "sleep quality, or readiness."
+    ),
+    annotations={"readOnlyHint": True, "openWorldHint": True}
+)
+async def get_whoop_health_data(
+    next_commitment_time: Optional[str] = None,
+    calendar_context: Optional[str] = None
+) -> dict:
+    """Keyword-friendly gateway for WHOOP health data. Delegates to get_poke_context."""
+    return await get_poke_context(
+        next_commitment_time=next_commitment_time,
+        calendar_context=calendar_context
+    )
+
+
+@mcp.tool(
+    description=(
+        "Get a comprehensive summary of today's WHOOP health data: recovery score, "
+        "strain, sleep duration and quality, HRV, resting heart rate, and recommended "
+        "strain range. For automation, prefer get_poke_context() which includes this "
+        "data plus check-in recommendations."
+    ),
+    annotations={"readOnlyHint": True, "openWorldHint": True}
+)
 async def get_today_summary() -> dict:
     """
     Get a comprehensive summary of today's WHOOP data including recovery score,
@@ -262,7 +308,15 @@ async def get_today_summary() -> dict:
         return {"error": str(e), "message": "Failed to fetch today's summary. Make sure WHOOP is authorized."}
 
 
-@mcp.tool()
+@mcp.tool(
+    description=(
+        "Get the most recent WHOOP recovery data: recovery score (0-100), "
+        "HRV (heart rate variability in milliseconds), resting heart rate, "
+        "and recovery state (green/yellow/red). For automation, prefer "
+        "get_poke_context() which includes recovery data plus check-in context."
+    ),
+    annotations={"readOnlyHint": True, "openWorldHint": True}
+)
 async def get_latest_recovery() -> dict:
     """
     Get the most recent recovery data including recovery score (0-100),
@@ -278,7 +332,15 @@ async def get_latest_recovery() -> dict:
         return {"error": str(e), "message": "Failed to fetch recovery data"}
 
 
-@mcp.tool()
+@mcp.tool(
+    description=(
+        "Get the most recent WHOOP sleep data: total sleep time, sleep debt, "
+        "sleep efficiency percentage, disturbances, and time in each sleep stage "
+        "(REM, deep, light, awake). For automation, prefer get_poke_context() "
+        "which includes sleep data plus check-in context."
+    ),
+    annotations={"readOnlyHint": True, "openWorldHint": True}
+)
 async def get_last_sleep() -> dict:
     """
     Get the most recent sleep data including total sleep time, sleep debt,
@@ -294,7 +356,14 @@ async def get_last_sleep() -> dict:
         return {"error": str(e), "message": "Failed to fetch sleep data"}
 
 
-@mcp.tool()
+@mcp.tool(
+    description=(
+        "Get WHOOP health metric trends over a custom time period (up to 90 days). "
+        "Supports recovery, strain, sleep, and HRV metrics with averages and daily "
+        "data points. For automation, prefer get_poke_context() for current-day data."
+    ),
+    annotations={"readOnlyHint": True, "openWorldHint": True}
+)
 async def get_trends(metric: str, days: int = 7) -> dict:
     """
     Get trends for a specific health metric over a custom time period.
@@ -534,7 +603,16 @@ async def get_state_thresholds() -> dict:
 
 # ============== Priority 1: Unified Context Tools ==============
 
-@mcp.tool()
+@mcp.tool(
+    description=(
+        "Get ALL context for Poke check-in automation in a single call. "
+        "Fetches live WHOOP health data (recovery score, HRV, resting heart rate, "
+        "sleep hours, sleep efficiency), runs state classification, and returns "
+        "check-in recommendations. This is the one-stop tool for WHOOP-powered automation. "
+        "Do NOT access WHOOP data through subagent types — this tool provides everything."
+    ),
+    annotations={"readOnlyHint": True, "openWorldHint": True}
+)
 async def get_poke_context(
     next_commitment_time: Optional[str] = None,
     calendar_context: Optional[str] = None
@@ -1336,10 +1414,10 @@ async def process_opt_out(keyword: str, duration_hours: Optional[float] = None) 
 async def root(request: Request) -> JSONResponse:
     """Server info endpoint."""
     return JSONResponse({
-        "name": "WHOOP MCP Server v2",
-        "version": "2.3.1",
+        "name": "WHOOP Health Data MCP Server",
+        "version": "2.4.0",
         "build": "sse-transport",
-        "mcp_server_name": "whoop-mcp-v2",
+        "mcp_server_name": "whoop-health-data",
         "status": "running",
         "tools_count": len(mcp._tool_manager._tools),
         "endpoints": {
@@ -1452,8 +1530,8 @@ async def list_tools(request: Request) -> JSONResponse:
     return JSONResponse({
         "count": len(tools),
         "tools": tools,
-        "version": "2.1.0",
-        "mcp_server_name": "whoop-mcp-v2"
+        "version": "2.4.0",
+        "mcp_server_name": "whoop-health-data"
     })
 
 
