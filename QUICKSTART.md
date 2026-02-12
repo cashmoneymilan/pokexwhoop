@@ -6,7 +6,7 @@ Get PokeXWhoop running locally in under 10 minutes.
 
 - Python 3.11+
 - A WHOOP account with data
-- (Optional) Turso account for cloud database
+- PostgreSQL (Railway provides this automatically)
 
 ## Option 1: Local Development
 
@@ -40,8 +40,8 @@ WHOOP_CLIENT_SECRET=your_client_secret
 WHOOP_REDIRECT_URI=http://localhost:8080/oauth/whoop/callback
 APP_BASE_URL=http://localhost:8080
 
-# For local dev, use SQLite (no Turso needed)
-# Leave TURSO_* vars empty or remove them
+# For local dev, you need a PostgreSQL database
+# Set DATABASE_URL to your local postgres or use Railway
 ```
 
 ### 4. Run the Server
@@ -85,11 +85,10 @@ Fork `cashmoneymicah/pokexwhoop` to your GitHub.
 2. **New Project** → **Deploy from GitHub**
 3. Select your forked repo
 
-### 3. Add Turso Database
+### 3. Add PostgreSQL Database
 
-1. Go to [Turso](https://turso.tech/) and create an account
-2. Create a new database
-3. Get your database URL and auth token
+1. In Railway, click **+ New** → **Database** → **PostgreSQL**
+2. Railway automatically sets `DATABASE_URL` for your app
 
 ### 4. Set Environment Variables
 
@@ -101,8 +100,8 @@ In Railway → **Variables**:
 | `WHOOP_CLIENT_SECRET` | From WHOOP Developer Portal |
 | `WHOOP_REDIRECT_URI` | `https://YOUR-RAILWAY-DOMAIN/oauth/whoop/callback` |
 | `APP_BASE_URL` | `https://YOUR-RAILWAY-DOMAIN` |
-| `TURSO_DATABASE_URL` | `libsql://your-db.turso.io` |
-| `TURSO_AUTH_TOKEN` | Your Turso token |
+
+Note: `DATABASE_URL` is set automatically by Railway when you add PostgreSQL.
 
 ### 5. Update WHOOP Redirect URI
 

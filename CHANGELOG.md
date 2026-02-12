@@ -8,7 +8,7 @@ Personal usage log, iteration history, and lessons learned.
 
 ### Deployment Status
 - **Production:** Hosted on Railway at `pokexwhoop-production.up.railway.app`
-- **Database:** Turso (SQLite cloud) for persistence
+- **Database:** PostgreSQL (Railway built-in)
 - **WHOOP Integration:** Active, OAuth tokens refreshing automatically
 - **Poke Integration:** Connected via SSE transport at `/sse`
 
@@ -82,7 +82,7 @@ Personal usage log, iteration history, and lessons learned.
 - OAuth 2.0 flow for WHOOP
 - State classification engine (5 states)
 - Railway deployment
-- Turso database integration
+- PostgreSQL database (Railway)
 
 **First impressions:**
 - The concept worked immediately—Poke could call tools and get WHOOP data

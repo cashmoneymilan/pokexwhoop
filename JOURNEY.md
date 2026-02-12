@@ -15,7 +15,7 @@ The core idea: instead of generic "how are you?" prompts, Poke would know if you
 We built the initial stack:
 - Python FastAPI server with FastMCP
 - OAuth 2.0 flow for WHOOP authentication
-- Turso (SQLite cloud) for persistence
+- PostgreSQL (Railway) for persistence
 - 4 core tools: `get_today_summary`, `get_latest_recovery`, `get_last_sleep`, `get_trends`
 - **State classification system** with 5 states: `urgent`, `anchored`, `drift_risk`, `high_drift_risk`, `primed`
 
@@ -121,14 +121,14 @@ The automation trigger said "can't access WHOOP data through available tools."
 - 14 MCP tools covering health data, state classification, engagement tracking, and analytics
 - HTTP API endpoints for automation triggers
 - OAuth with robust token refresh (background + cron + on-demand)
-- SQLite/Turso persistence for tokens, activity logs, state transitions, engagement metrics
+- PostgreSQL persistence for tokens, activity logs, state transitions, engagement metrics
 - Configurable thresholds stored in database
 - Dual MCP transport (SSE for Poke, HTTP for modern clients)
 
 **The Tech Stack:**
 - Python + FastAPI + FastMCP
 - Railway (hosting)
-- Turso (SQLite cloud)
+- PostgreSQL (Railway)
 - WHOOP API (OAuth 2.0)
 - Poke AI (MCP integration)
 

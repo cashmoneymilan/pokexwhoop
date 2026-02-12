@@ -59,7 +59,7 @@ PokeXWhoop uses triple-redundant refresh:
 
 ### Token Storage
 
-Tokens are stored in Turso (SQLite cloud) with schema:
+Tokens are stored in PostgreSQL with schema:
 
 ```sql
 CREATE TABLE tokens (
@@ -400,8 +400,7 @@ CREATE TABLE settings (
 | `WHOOP_CLIENT_SECRET` | Yes | OAuth Client Secret |
 | `WHOOP_REDIRECT_URI` | Yes | Must match portal setting exactly |
 | `APP_BASE_URL` | Yes | Public URL of deployed server |
-| `TURSO_DATABASE_URL` | Yes | Turso database connection string |
-| `TURSO_AUTH_TOKEN` | Yes | Turso authentication token |
+| `DATABASE_URL` | Yes | PostgreSQL connection string (auto-set by Railway) |
 | `PORT` | No | Server port (default: 8080) |
 
 ---

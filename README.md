@@ -42,7 +42,7 @@ WHOOP API ──OAuth──▶ PokeXWhoop Server ──MCP/SSE──▶ Poke AI
                           │
                     ┌─────┴─────┐
                     ▼           ▼
-              State Engine   Turso DB
+              State Engine   PostgreSQL
               (5 states)    (tokens, logs)
 ```
 
@@ -68,7 +68,7 @@ WHOOP API ──OAuth──▶ PokeXWhoop Server ──MCP/SSE──▶ Poke AI
 
 - Python 3.11 + FastAPI + FastMCP
 - Railway (hosting)
-- Turso (SQLite cloud)
+- PostgreSQL (Railway built-in)
 - WHOOP API (OAuth 2.0)
 
 ## License
