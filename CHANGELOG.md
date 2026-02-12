@@ -61,7 +61,7 @@ Personal usage log, iteration history, and lessons learned.
 | State classification | Manual | Core logic verified via `/api/poke-context` |
 | OAuth flow | Manual | End-to-end tested on Railway |
 | Token refresh | Manual | Verified via `/health` and `/keep-alive` |
-| MCP tools | Manual | All 14 tools callable via Poke |
+| MCP tools | Manual | All 15 tools callable via Poke |
 | Unit tests | **None** | No automated test suite yet |
 
 **Risk:** No automated tests means regressions are caught manually. High priority for next iteration.

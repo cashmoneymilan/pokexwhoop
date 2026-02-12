@@ -132,11 +132,11 @@ Server info and status.
 **Response:**
 ```json
 {
-  "server": "whoop-health-data-server",
-  "version": "2.1.0",
+  "server": "whoop-health-data",
+  "version": "2.4.0",
   "status": "healthy",
   "whoop_connected": true,
-  "tools_available": 14,
+  "tools_available": 15,
   "endpoints": {
     "health": "/health",
     "tools": "/tools",
@@ -161,6 +161,40 @@ Health check with token status.
     "expires_at": "2026-02-12T18:00:00Z",
     "hours_until_expiry": 5.2
   }
+}
+```
+
+### GET /token-status
+
+Detailed token expiry information.
+
+**Response:**
+```json
+{
+  "exists": true,
+  "expires_at": "2026-02-12T18:00:00Z",
+  "hours_until_expiry": 5.2,
+  "scope": "offline read:recovery read:sleep read:workout read:cycles read:profile"
+}
+```
+
+### GET /keep-alive
+
+Proactive token refresh for cron jobs. Refreshes token if expiring within 1 hour.
+
+**Response:**
+```json
+{
+  "status": "token_valid",
+  "hours_until_expiry": 5.2
+}
+```
+
+Or if refreshed:
+```json
+{
+  "status": "token_refreshed",
+  "new_expiry": "2026-02-12T19:00:00Z"
 }
 ```
 

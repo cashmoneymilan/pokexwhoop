@@ -77,4 +77,4 @@ MIT — See [LICENSE](./LICENSE)
 
 ---
 
-Built by [@cashmoneymicah](https://github.com/cashmoneymicah)
+Built by [@cashmoneymilan](https://github.com/cashmoneymilan)

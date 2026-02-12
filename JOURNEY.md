@@ -107,7 +107,7 @@ The automation trigger said "can't access WHOOP data through available tools."
 
 2. **Added `get_whoop_health_data` gateway tool** — A single entry point that returns all health metrics. Explicitly described as "PRIMARY TOOL for WHOOP data."
 
-3. **Rewrote server metadata** — Changed server name to `"whoop-health-data-server"` with instructions explicitly stating it provides WHOOP health data.
+3. **Rewrote server metadata** — Changed server name to `"whoop-health-data"` with instructions explicitly stating it provides WHOOP health data.
 
 4. **Added OpenAPI annotations** — `openWorldHint=True` to indicate the tool connects to external APIs.
 
@@ -118,7 +118,7 @@ The automation trigger said "can't access WHOOP data through available tools."
 ## Where We Are Now
 
 **Production System:**
-- 14 MCP tools covering health data, state classification, engagement tracking, and analytics
+- 15 MCP tools covering health data, state classification, engagement tracking, and analytics
 - HTTP API endpoints for automation triggers
 - OAuth with robust token refresh (background + cron + on-demand)
 - PostgreSQL persistence for tokens, activity logs, state transitions, engagement metrics

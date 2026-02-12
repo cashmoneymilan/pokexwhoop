@@ -13,7 +13,7 @@ Get PokeXWhoop running locally in under 10 minutes.
 ### 1. Clone and Install
 
 ```bash
-git clone https://github.com/cashmoneymicah/pokexwhoop.git
+git clone https://github.com/cashmoneymilan/pokexwhoop.git
 cd pokexwhoop
 python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
@@ -77,7 +77,7 @@ curl http://localhost:8080/tools
 
 ### 1. Fork the Repo
 
-Fork `cashmoneymicah/pokexwhoop` to your GitHub.
+Fork `cashmoneymilan/pokexwhoop` to your GitHub.
 
 ### 2. Create Railway Project
 
@@ -145,7 +145,7 @@ curl http://localhost:8080/api/poke-context
 
 # 4. MCP tools are registered
 curl http://localhost:8080/tools
-# → Should list 14+ tools
+# → Should list 15 tools
 ```
 
 ---
