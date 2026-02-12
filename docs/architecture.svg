@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 500">
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#666"/>
+    </marker>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="2" dy="2" stdDeviation="2" flood-opacity="0.15"/>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="900" height="500" fill="#fafafa"/>
+
+  <!-- Title -->
+  <text x="450" y="35" text-anchor="middle" font-family="system-ui, sans-serif" font-size="20" font-weight="600" fill="#1a1a1a">PokeXWhoop Architecture</text>
+
+  <!-- WHOOP API Box -->
+  <rect x="30" y="180" width="140" height="80" rx="8" fill="#00a3e0" filter="url(#shadow)"/>
+  <text x="100" y="215" text-anchor="middle" font-family="system-ui, sans-serif" font-size="14" font-weight="600" fill="white">WHOOP API</text>
+  <text x="100" y="235" text-anchor="middle" font-family="system-ui, sans-serif" font-size="11" fill="white" opacity="0.9">Recovery, Sleep</text>
+  <text x="100" y="250" text-anchor="middle" font-family="system-ui, sans-serif" font-size="11" fill="white" opacity="0.9">Strain, HRV</text>
+
+  <!-- Arrow: WHOOP to Server -->
+  <line x1="170" y1="220" x2="250" y2="220" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)"/>
+  <text x="210" y="210" text-anchor="middle" font-family="system-ui, sans-serif" font-size="10" fill="#666">OAuth 2.0</text>
+
+  <!-- Main Server Box -->
+  <rect x="260" y="100" width="280" height="240" rx="10" fill="white" stroke="#e0e0e0" stroke-width="2" filter="url(#shadow)"/>
+  <text x="400" y="130" text-anchor="middle" font-family="system-ui, sans-serif" font-size="16" font-weight="600" fill="#1a1a1a">PokeXWhoop Server</text>
+
+  <!-- Normalization Layer -->
+  <rect x="280" y="150" width="240" height="45" rx="6" fill="#f0f4ff" stroke="#a0b4ff" stroke-width="1"/>
+  <text x="400" y="178" text-anchor="middle" font-family="system-ui, sans-serif" font-size="12" fill="#3b5998">Data Normalization</text>
+
+  <!-- State Engine -->
+  <rect x="280" y="205" width="240" height="60" rx="6" fill="#fff4e6" stroke="#ffb366" stroke-width="1"/>
+  <text x="400" y="228" text-anchor="middle" font-family="system-ui, sans-serif" font-size="12" font-weight="500" fill="#b35900">State Engine</text>
+  <text x="400" y="248" text-anchor="middle" font-family="system-ui, sans-serif" font-size="10" fill="#b35900">urgent | anchored | drift_risk</text>
+  <text x="400" y="260" text-anchor="middle" font-family="system-ui, sans-serif" font-size="10" fill="#b35900">high_drift_risk | primed</text>
+
+  <!-- MCP Tools -->
+  <rect x="280" y="275" width="115" height="50" rx="6" fill="#e8f5e9" stroke="#66bb6a" stroke-width="1"/>
+  <text x="337" y="298" text-anchor="middle" font-family="system-ui, sans-serif" font-size="11" fill="#2e7d32">MCP Tools</text>
+  <text x="337" y="313" text-anchor="middle" font-family="system-ui, sans-serif" font-size="10" fill="#2e7d32">14 tools</text>
+
+  <!-- HTTP API -->
+  <rect x="405" y="275" width="115" height="50" rx="6" fill="#e3f2fd" stroke="#42a5f5" stroke-width="1"/>
+  <text x="462" y="298" text-anchor="middle" font-family="system-ui, sans-serif" font-size="11" fill="#1565c0">HTTP API</text>
+  <text x="462" y="313" text-anchor="middle" font-family="system-ui, sans-serif" font-size="10" fill="#1565c0">/api/poke-context</text>
+
+  <!-- Arrows inside server -->
+  <line x1="400" y1="195" x2="400" y2="205" stroke="#999" stroke-width="1.5"/>
+  <line x1="400" y1="265" x2="337" y2="275" stroke="#999" stroke-width="1.5"/>
+  <line x1="400" y1="265" x2="462" y2="275" stroke="#999" stroke-width="1.5"/>
+
+  <!-- Arrow: Server to Poke (SSE) -->
+  <line x1="540" y1="180" x2="620" y2="140" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)"/>
+  <text x="595" y="145" text-anchor="middle" font-family="system-ui, sans-serif" font-size="10" fill="#666">MCP/SSE</text>
+
+  <!-- Arrow: Server to Automation (HTTP) -->
+  <line x1="540" y1="260" x2="620" y2="300" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)"/>
+  <text x="595" y="295" text-anchor="middle" font-family="system-ui, sans-serif" font-size="10" fill="#666">REST</text>
+
+  <!-- Poke AI Box -->
+  <rect x="630" y="80" width="140" height="100" rx="8" fill="#9c27b0" filter="url(#shadow)"/>
+  <text x="700" y="115" text-anchor="middle" font-family="system-ui, sans-serif" font-size="14" font-weight="600" fill="white">Poke AI</text>
+  <text x="700" y="140" text-anchor="middle" font-family="system-ui, sans-serif" font-size="11" fill="white" opacity="0.9">Chat Interface</text>
+  <text x="700" y="160" text-anchor="middle" font-family="system-ui, sans-serif" font-size="11" fill="white" opacity="0.9">Manual Queries</text>
+
+  <!-- Automation Box -->
+  <rect x="630" y="260" width="140" height="100" rx="8" fill="#ff7043" filter="url(#shadow)"/>
+  <text x="700" y="295" text-anchor="middle" font-family="system-ui, sans-serif" font-size="14" font-weight="600" fill="white">Automation</text>
+  <text x="700" y="320" text-anchor="middle" font-family="system-ui, sans-serif" font-size="11" fill="white" opacity="0.9">Hourly Triggers</text>
+  <text x="700" y="340" text-anchor="middle" font-family="system-ui, sans-serif" font-size="11" fill="white" opacity="0.9">Proactive Check-ins</text>
+
+  <!-- User -->
+  <ellipse cx="830" cy="220" rx="45" ry="45" fill="#607d8b" filter="url(#shadow)"/>
+  <text x="830" y="215" text-anchor="middle" font-family="system-ui, sans-serif" font-size="14" font-weight="600" fill="white">You</text>
+  <text x="830" y="232" text-anchor="middle" font-family="system-ui, sans-serif" font-size="10" fill="white" opacity="0.9">(Human)</text>
+
+  <!-- Arrows to User -->
+  <line x1="770" y1="155" x2="795" y2="190" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)"/>
+  <line x1="770" y1="285" x2="795" y2="250" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)"/>
+
+  <!-- Database Box -->
+  <rect x="320" y="380" width="160" height="70" rx="8" fill="#455a64" filter="url(#shadow)"/>
+  <text x="400" y="410" text-anchor="middle" font-family="system-ui, sans-serif" font-size="14" font-weight="600" fill="white">Turso DB</text>
+  <text x="400" y="430" text-anchor="middle" font-family="system-ui, sans-serif" font-size="10" fill="white" opacity="0.9">Tokens, Activity Logs</text>
+  <text x="400" y="445" text-anchor="middle" font-family="system-ui, sans-serif" font-size="10" fill="white" opacity="0.9">State Transitions, Settings</text>
+
+  <!-- Arrow: Server to DB -->
+  <line x1="400" y1="340" x2="400" y2="370" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)"/>
+
+  <!-- Legend -->
+  <rect x="30" y="400" width="200" height="80" rx="6" fill="white" stroke="#e0e0e0" stroke-width="1"/>
+  <text x="40" y="420" font-family="system-ui, sans-serif" font-size="11" font-weight="600" fill="#1a1a1a">Data Flow</text>
+  <line x1="40" y1="438" x2="70" y2="438" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)"/>
+  <text x="80" y="442" font-family="system-ui, sans-serif" font-size="10" fill="#666">Request/Response</text>
+  <rect x="40" y="455" width="12" height="12" rx="2" fill="#fff4e6" stroke="#ffb366" stroke-width="1"/>
+  <text x="60" y="465" font-family="system-ui, sans-serif" font-size="10" fill="#666">Core Logic</text>
+  <rect x="120" y="455" width="12" height="12" rx="2" fill="#e8f5e9" stroke="#66bb6a" stroke-width="1"/>
+  <text x="140" y="465" font-family="system-ui, sans-serif" font-size="10" fill="#666">Interface</text>
+</svg>
