@@ -2,6 +2,8 @@
 
 **An MCP server that gives AI agents real-time awareness of your physiological state.**
 
+> **[View Project Summary (PDF)](./docs/PokeXWhoop-Summary.pdf)** — One-page overview of the project
+
 PokeXWhoop bridges WHOOP health data to Poke AI, enabling context-aware check-ins based on recovery, sleep, and schedule pressure—not arbitrary timers.
 
 ## Why It Matters
