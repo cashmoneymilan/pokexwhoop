@@ -26,6 +26,7 @@ from whoop_client import (
     normalize_cycle,
     get_recommended_strain
 )
+from policy import build_policy_contract
 
 load_dotenv()
 
@@ -872,6 +873,32 @@ async def get_poke_context(
         }
 
 
+@mcp.tool(
+    description=(
+        "Return a deterministic Poke behavior policy contract. "
+        "This wraps get_poke_context() with a typed allow/block decision, allowed message type, "
+        "approved message text, blocked behaviors, and required audit actions. "
+        "Use this instead of improvising from raw WHOOP context."
+    ),
+    annotations={"readOnlyHint": True, "openWorldHint": True},
+)
+async def get_poke_policy(
+    trigger_source: str = "",
+    next_commitment_time: Optional[str] = None,
+    calendar_context: Optional[str] = None,
+) -> dict:
+    context = await get_poke_context(
+        next_commitment_time=next_commitment_time,
+        calendar_context=calendar_context,
+    )
+    return build_policy_contract(
+        context,
+        trigger_source=trigger_source or "mcp",
+        audit_logged=False,
+        verification_status="Policy Preview - Not Logged",
+    )
+
+
 @mcp.tool()
 async def record_user_activity(response_quality: str) -> dict:
     """
@@ -1606,6 +1633,25 @@ async def api_poke_context(request: Request) -> JSONResponse:
     result = await get_poke_context(
         next_commitment_time=params.get("next_commitment_time"),
         calendar_context=params.get("calendar_context")
+    )
+    return JSONResponse(result)
+
+
+@mcp.custom_route("/api/poke-policy", methods=["GET"])
+async def api_poke_policy(request: Request) -> JSONResponse:
+    """
+    HTTP endpoint for Poke automation to get deterministic messaging policy.
+
+    Query params:
+    - trigger_source: What caused the policy check (optional)
+    - next_commitment_time: ISO timestamp of next calendar event (optional)
+    - calendar_context: Brief description of upcoming events (optional)
+    """
+    params = request.query_params
+    result = await get_poke_policy(
+        trigger_source=params.get("trigger_source") or "api",
+        next_commitment_time=params.get("next_commitment_time"),
+        calendar_context=params.get("calendar_context"),
     )
     return JSONResponse(result)
 
