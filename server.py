@@ -24,7 +24,8 @@ from whoop_client import (
     normalize_recovery,
     normalize_sleep,
     normalize_cycle,
-    get_recommended_strain
+    get_recommended_strain,
+    select_stable_whoop_records,
 )
 from policy import build_policy_contract
 
@@ -212,6 +213,66 @@ def generate_reasoning(
             parts.append(f"sleep efficiency {sleep_efficiency}% (suboptimal)")
 
     return " | ".join(parts)
+
+
+def _snapshot_whoop_data(snapshot: Optional[dict], metadata: dict) -> Optional[dict]:
+    """Convert the latest finalized DB snapshot into policy-compatible WHOOP data."""
+    if not snapshot:
+        return None
+    recovery_score = snapshot.get("recovery_score")
+    state = "unknown"
+    if recovery_score is not None:
+        if recovery_score < 60:
+            state = "drift_risk"
+        elif recovery_score >= 80:
+            state = "primed"
+        else:
+            state = "anchored"
+    sleep_hours = None
+    if snapshot.get("sleep_duration") is not None:
+        sleep_hours = round(float(snapshot["sleep_duration"]) / 3600, 1)
+    return {
+        **metadata,
+        "recovery_score": recovery_score,
+        "hrv": round(float(snapshot["hrv"]), 1) if snapshot.get("hrv") is not None else None,
+        "resting_hr": snapshot.get("resting_hr"),
+        "sleep_hours": sleep_hours,
+        "sleep_efficiency": round(float(snapshot["sleep_efficiency"]), 1) if snapshot.get("sleep_efficiency") is not None else None,
+        "state": state,
+        "reasoning": (
+            "Using latest finalized WHOOP snapshot because current WHOOP data is "
+            f"{metadata.get('whoop_data_freshness') or 'not finalized'}."
+        ),
+        "whoop_data_freshness": "stale_finalized_fallback",
+        "classification_source": "last_finalized_snapshot",
+        "snapshot_date": snapshot.get("date"),
+    }
+
+
+async def _save_finalized_snapshot(recovery: dict, sleep: dict, metadata: dict) -> None:
+    """Persist finalized WHOOP records so pending morning reads can safely fall back."""
+    normalized_recovery = normalize_recovery(recovery)
+    normalized_sleep = normalize_sleep(sleep)
+    if not normalized_recovery or not normalized_sleep:
+        return
+    await database.save_snapshot(
+        {
+            "date": normalized_recovery.get("date") or normalized_sleep.get("date"),
+            "recovery_score": normalized_recovery.get("recovery_score"),
+            "recovery_state": normalized_recovery.get("state"),
+            "sleep_duration": normalized_sleep.get("total_sleep"),
+            "sleep_debt": normalized_sleep.get("sleep_debt"),
+            "sleep_efficiency": normalized_sleep.get("sleep_efficiency"),
+            "sleep_disturbances": normalized_sleep.get("disturbances"),
+            "hrv": normalized_recovery.get("hrv"),
+            "resting_hr": normalized_recovery.get("resting_hr"),
+            "raw_data": {
+                "recovery": recovery,
+                "sleep": sleep,
+                "metadata": metadata,
+            },
+        }
+    )
 
 
 # ============== MCP Tools ==============
@@ -650,15 +711,48 @@ async def get_poke_context(
         now = datetime.now()
         today = now.strftime("%Y-%m-%d")
 
-        # ---- Fetch fresh WHOOP data ----
+        # ---- Fetch finalized WHOOP data ----
         whoop_data = None
         whoop_error = None
+        whoop_freshness = {
+            "whoop_data_freshness": "missing",
+            "classification_source": None,
+            "finalization_delay_minutes": int(os.getenv("WHOOP_FINALIZATION_DELAY_MINUTES", "30") or "30"),
+        }
         try:
-            recovery_data = await whoop_client.get_recovery(limit=1)
-            sleep_data = await whoop_client.get_sleep(limit=1)
+            recovery_data = await whoop_client.get_recovery(limit=5)
+            sleep_data = await whoop_client.get_sleep(limit=5)
+            stable = select_stable_whoop_records(recovery_data, sleep_data)
+            metadata = stable.get("metadata") or {}
+            whoop_freshness = {**whoop_freshness, **metadata}
 
-            recovery = normalize_recovery(recovery_data[0]) if recovery_data else None
-            sleep = normalize_sleep(sleep_data[0]) if sleep_data else None
+            recovery = normalize_recovery(stable["recovery"]) if stable.get("recovery") else None
+            sleep = normalize_sleep(stable["sleep"]) if stable.get("sleep") else None
+
+            if metadata.get("whoop_data_freshness") == "finalized_current" and recovery and sleep:
+                try:
+                    await _save_finalized_snapshot(stable["recovery"], stable["sleep"], metadata)
+                except Exception as snapshot_err:
+                    print(f"[get_poke_context] Snapshot save error (non-fatal): {snapshot_err}")
+            elif metadata.get("whoop_data_freshness") in {"pending_score", "too_fresh", "missing"}:
+                snapshot = await database.get_latest_snapshot()
+                fallback = _snapshot_whoop_data(snapshot, metadata)
+                if fallback:
+                    whoop_data = fallback
+                    recovery_score = fallback.get("recovery_score")
+                    sleep_efficiency = fallback.get("sleep_efficiency")
+                    sleep_hours = fallback.get("sleep_hours")
+                    hrv = fallback.get("hrv")
+                    resting_hr = fallback.get("resting_hr")
+                    recovery = {
+                        "recovery_score": recovery_score,
+                        "hrv": hrv,
+                        "resting_hr": resting_hr,
+                    }
+                    sleep = {
+                        "sleep_efficiency": sleep_efficiency,
+                        "total_sleep": sleep_hours * 3600 if sleep_hours else None,
+                    }
 
             recovery_score = recovery["recovery_score"] if recovery else None
             sleep_efficiency = sleep.get("sleep_efficiency") if sleep else None
@@ -679,8 +773,18 @@ async def get_poke_context(
 
             # Run state classification with fresh data
             settings = await database.get_user_settings()
-            state = await classify_state_async(buffer_hours_for_state, recovery_score, sleep_efficiency, settings)
-            reasoning = generate_reasoning(state, buffer_hours_for_state, recovery_score, sleep_efficiency)
+            if whoop_data and whoop_data.get("classification_source") == "last_finalized_snapshot":
+                state = str(whoop_data.get("state") or "unknown")
+                reasoning = str(whoop_data.get("reasoning") or "")
+            elif metadata.get("whoop_data_freshness") == "finalized_current":
+                state = await classify_state_async(buffer_hours_for_state, recovery_score, sleep_efficiency, settings)
+                reasoning = generate_reasoning(state, buffer_hours_for_state, recovery_score, sleep_efficiency)
+            else:
+                state = "unknown"
+                reasoning = (
+                    "WHOOP sleep/recovery is not finalized yet; policy must not classify from "
+                    f"{metadata.get('whoop_data_freshness') or 'missing'} data."
+                )
 
             # Update stored state in database
             previous_state = ctx.get("current_state") if ctx else None
@@ -706,15 +810,17 @@ async def get_poke_context(
             except Exception as ctx_err:
                 print(f"[get_poke_context] State update error (non-fatal): {ctx_err}")
 
-            whoop_data = {
-                "recovery_score": recovery_score,
-                "hrv": round(hrv, 1) if hrv else None,
-                "resting_hr": resting_hr,
-                "sleep_hours": round(sleep_hours, 1) if sleep_hours else None,
-                "sleep_efficiency": round(sleep_efficiency, 1) if sleep_efficiency else None,
-                "state": state,
-                "reasoning": reasoning
-            }
+            if not whoop_data or whoop_data.get("classification_source") != "last_finalized_snapshot":
+                whoop_data = {
+                    "recovery_score": recovery_score if metadata.get("whoop_data_freshness") == "finalized_current" else None,
+                    "hrv": round(hrv, 1) if hrv and metadata.get("whoop_data_freshness") == "finalized_current" else None,
+                    "resting_hr": resting_hr if metadata.get("whoop_data_freshness") == "finalized_current" else None,
+                    "sleep_hours": round(sleep_hours, 1) if sleep_hours and metadata.get("whoop_data_freshness") == "finalized_current" else None,
+                    "sleep_efficiency": round(sleep_efficiency, 1) if sleep_efficiency and metadata.get("whoop_data_freshness") == "finalized_current" else None,
+                    "state": state,
+                    "reasoning": reasoning,
+                    **metadata,
+                }
 
             # Refresh ctx after state update
             ctx = await database.get_poke_context()
@@ -857,6 +963,14 @@ async def get_poke_context(
                 "calendar_context": calendar_context
             },
             "whoop_data": whoop_data,
+            "whoop_data_freshness": (whoop_data or whoop_freshness).get("whoop_data_freshness"),
+            "classification_source": (whoop_data or whoop_freshness).get("classification_source"),
+            "sleep_score_state": (whoop_data or whoop_freshness).get("sleep_score_state"),
+            "recovery_score_state": (whoop_data or whoop_freshness).get("recovery_score_state"),
+            "sleep_id": (whoop_data or whoop_freshness).get("sleep_id"),
+            "recovery_sleep_id": (whoop_data or whoop_freshness).get("recovery_sleep_id"),
+            "sleep_end": (whoop_data or whoop_freshness).get("sleep_end"),
+            "finalization_delay_minutes": (whoop_data or whoop_freshness).get("finalization_delay_minutes"),
             "whoop_error": whoop_error,
             "timestamp": now.isoformat()
         }

@@ -169,6 +169,7 @@ def _approved_message(state: str, policy: dict[str, Any], inputs: dict[str, Any]
     choices = _choices(life_os_context)
     message_type = policy.get("message_type")
     recovery = inputs.get("recovery_score")
+    freshness = inputs.get("whoop_data_freshness")
 
     if message_type == "critical_alert":
         item = choices[0]
@@ -176,7 +177,12 @@ def _approved_message(state: str, policy: dict[str, Any], inputs: dict[str, Any]
     if message_type == "commitment_reminder":
         return {"text": "Next commitment is close. Confirm the one prep item or clear it.", "choices": choices[:2]}
     if message_type == "structure_prompt":
-        recovery_text = f"Recovery is {recovery:.0f}%" if isinstance(recovery, (int, float)) else "Recovery is low/unclear"
+        if freshness == "stale_finalized_fallback" and isinstance(recovery, (int, float)):
+            recovery_text = f"Latest finalized recovery was {recovery:.0f}%"
+        elif freshness != "finalized_current":
+            recovery_text = "WHOOP is still finalizing sleep"
+        else:
+            recovery_text = f"Recovery is {recovery:.0f}%" if isinstance(recovery, (int, float)) else "Recovery is low/unclear"
         return {"text": f"{recovery_text}. Pick one thing to move now.", "choices": choices}
     if message_type == "recovery_prompt":
         return {"text": "Low-capacity mode. Pick one low-pressure next step or call recovery.", "choices": choices[:2] + ["Recovery block"]}
@@ -224,6 +230,14 @@ def build_policy_contract(
         "opt_out_active": bool(opt_out.get("active")),
         "trigger_source": trigger_source or "unspecified",
         "life_os_context_available": bool(life_context),
+        "whoop_data_freshness": whoop_data.get("whoop_data_freshness") or context.get("whoop_data_freshness"),
+        "classification_source": whoop_data.get("classification_source") or context.get("classification_source"),
+        "sleep_score_state": whoop_data.get("sleep_score_state") or context.get("sleep_score_state"),
+        "recovery_score_state": whoop_data.get("recovery_score_state") or context.get("recovery_score_state"),
+        "sleep_id": whoop_data.get("sleep_id") or context.get("sleep_id"),
+        "recovery_sleep_id": whoop_data.get("recovery_sleep_id") or context.get("recovery_sleep_id"),
+        "sleep_end": whoop_data.get("sleep_end") or context.get("sleep_end"),
+        "finalization_delay_minutes": whoop_data.get("finalization_delay_minutes") or context.get("finalization_delay_minutes"),
     }
 
     policy = _policy_for_state(

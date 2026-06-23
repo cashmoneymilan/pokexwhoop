@@ -3,26 +3,39 @@ WHOOP API client with automatic token refresh.
 """
 
 import os
-import aiohttp
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
-import database
 
 WHOOP_API_BASE = "https://api.prod.whoop.com/developer"
 WHOOP_TOKEN_URL = "https://api.prod.whoop.com/oauth/oauth2/token"
 
 # Refresh token 5 minutes before expiry
 TOKEN_REFRESH_BUFFER = timedelta(minutes=5)
+FINALIZATION_DELAY_MINUTES = int(os.getenv("WHOOP_FINALIZATION_DELAY_MINUTES", "30") or "30")
+
+
+def _aiohttp():
+    try:
+        import aiohttp
+    except ImportError as error:
+        raise RuntimeError("aiohttp is required for live WHOOP API calls.") from error
+    return aiohttp
+
+
+def _database():
+    import database
+    return database
 
 
 class WhoopClient:
     def __init__(self):
         self.client_id = os.getenv("WHOOP_CLIENT_ID")
         self.client_secret = os.getenv("WHOOP_CLIENT_SECRET")
-        self._session: Optional[aiohttp.ClientSession] = None
+        self._session = None
 
-    async def _get_session(self) -> aiohttp.ClientSession:
+    async def _get_session(self):
         if self._session is None or self._session.closed:
+            aiohttp = _aiohttp()
             self._session = aiohttp.ClientSession()
         return self._session
 
@@ -32,6 +45,7 @@ class WhoopClient:
 
     async def _ensure_valid_token(self) -> str:
         """Ensure we have a valid access token, refreshing if necessary."""
+        database = _database()
         token = await database.get_token()
 
         if not token:
@@ -50,6 +64,7 @@ class WhoopClient:
 
     async def _refresh_token(self, refresh_token: str):
         """Refresh the access token."""
+        database = _database()
         session = await self._get_session()
 
         async with session.post(
@@ -93,6 +108,7 @@ class WhoopClient:
             print(f"[WHOOP] Response status: {response.status}")
             if response.status == 401:
                 # Try refreshing token and retry
+                database = _database()
                 token = await database.get_token()
                 if token:
                     await self._refresh_token(token["refresh_token"])
@@ -139,6 +155,145 @@ class WhoopClient:
 
 # Helper functions to normalize WHOOP data
 
+def parse_whoop_datetime(value: str | None) -> Optional[datetime]:
+    """Parse a WHOOP ISO timestamp into an aware datetime when possible."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def score_state(record: Dict) -> str:
+    return str(record.get("score_state") or "").upper()
+
+
+def is_scored(record: Dict) -> bool:
+    return score_state(record) == "SCORED"
+
+
+def sleep_end_time(sleep: Dict) -> Optional[datetime]:
+    return parse_whoop_datetime(sleep.get("end"))
+
+
+def sleep_sort_key(sleep: Dict) -> datetime:
+    return sleep_end_time(sleep) or parse_whoop_datetime(sleep.get("start")) or datetime.min.replace(tzinfo=timezone.utc)
+
+
+def recovery_sort_key(recovery: Dict) -> datetime:
+    return (
+        parse_whoop_datetime(recovery.get("created_at"))
+        or parse_whoop_datetime(recovery.get("updated_at"))
+        or datetime.min.replace(tzinfo=timezone.utc)
+    )
+
+
+def is_nap(sleep: Dict) -> bool:
+    return bool(sleep.get("nap"))
+
+
+def _sleep_status(sleep: Dict | None, now: datetime, finalization_delay_minutes: int) -> tuple[str, str]:
+    if not sleep:
+        return "missing", "No sleep record returned by WHOOP."
+    if not is_scored(sleep):
+        return "pending_score", f"Latest sleep score_state is {score_state(sleep) or 'missing'}, not SCORED."
+    end_time = sleep_end_time(sleep)
+    if end_time:
+        age_minutes = (now - end_time).total_seconds() / 60
+        if age_minutes < finalization_delay_minutes:
+            return "too_fresh", f"Sleep ended {age_minutes:.0f} minutes ago; waiting {finalization_delay_minutes} minutes."
+    return "finalized_current", "Latest sleep is SCORED and outside the freshness delay."
+
+
+def _matching_recovery_status(recovery: Dict | None) -> tuple[str, str]:
+    if not recovery:
+        return "missing", "No matching recovery record returned for selected sleep."
+    if not is_scored(recovery):
+        return "pending_score", f"Matching recovery score_state is {score_state(recovery) or 'missing'}, not SCORED."
+    return "finalized_current", "Matching recovery is SCORED."
+
+
+def select_stable_whoop_records(
+    recovery_records: List[Dict],
+    sleep_records: List[Dict],
+    *,
+    now: datetime | None = None,
+    finalization_delay_minutes: int = FINALIZATION_DELAY_MINUTES,
+) -> Dict:
+    """Select only finalized WHOOP sleep/recovery records for policy classification.
+
+    WHOOP can expose latest sleep/recovery records while scores are still pending.
+    Proactive behavior policy must not classify from those partial records.
+    """
+    current_time = now or datetime.now(timezone.utc)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=timezone.utc)
+
+    ordered_sleeps = sorted(sleep_records or [], key=sleep_sort_key, reverse=True)
+    non_nap_sleeps = [item for item in ordered_sleeps if not is_nap(item)]
+    considered_sleeps = non_nap_sleeps or ordered_sleeps
+    latest_sleep = considered_sleeps[0] if considered_sleeps else None
+    sleep_status, sleep_reason = _sleep_status(latest_sleep, current_time, finalization_delay_minutes)
+
+    metadata = {
+        "sleep_score_state": score_state(latest_sleep) if latest_sleep else None,
+        "sleep_id": latest_sleep.get("id") if latest_sleep else None,
+        "sleep_end": latest_sleep.get("end") if latest_sleep else None,
+        "sleep_is_nap": is_nap(latest_sleep) if latest_sleep else None,
+        "finalization_delay_minutes": finalization_delay_minutes,
+        "whoop_data_freshness": sleep_status,
+        "classification_source": None,
+        "freshness_reason": sleep_reason,
+        "recovery_score_state": None,
+        "recovery_sleep_id": None,
+    }
+
+    if sleep_status != "finalized_current":
+        return {"sleep": latest_sleep, "recovery": None, "metadata": metadata}
+
+    selected_sleep_id = latest_sleep.get("id") if latest_sleep else None
+    recoveries = sorted(recovery_records or [], key=recovery_sort_key, reverse=True)
+    matching = [
+        item for item in recoveries
+        if selected_sleep_id and str(item.get("sleep_id") or "") == str(selected_sleep_id)
+    ]
+    selected_recovery = matching[0] if matching else (recoveries[0] if recoveries else None)
+    recovery_status, recovery_reason = _matching_recovery_status(selected_recovery)
+    metadata.update(
+        {
+            "recovery_score_state": score_state(selected_recovery) if selected_recovery else None,
+            "recovery_sleep_id": selected_recovery.get("sleep_id") if selected_recovery else None,
+            "whoop_data_freshness": recovery_status,
+            "freshness_reason": recovery_reason,
+        }
+    )
+
+    if recovery_status != "finalized_current":
+        return {"sleep": latest_sleep, "recovery": selected_recovery, "metadata": metadata}
+
+    if selected_sleep_id and selected_recovery and str(selected_recovery.get("sleep_id") or "") != str(selected_sleep_id):
+        metadata.update(
+            {
+                "whoop_data_freshness": "missing",
+                "freshness_reason": "No recovery matched the selected finalized sleep_id.",
+                "classification_source": None,
+            }
+        )
+        return {"sleep": latest_sleep, "recovery": selected_recovery, "metadata": metadata}
+
+    metadata.update(
+        {
+            "whoop_data_freshness": "finalized_current",
+            "classification_source": "current_finalized",
+            "freshness_reason": "Selected sleep and recovery are SCORED and matched.",
+        }
+    )
+    return {"sleep": latest_sleep, "recovery": selected_recovery, "metadata": metadata}
+
 def normalize_recovery(recovery: Dict) -> Dict:
     """Normalize recovery data."""
     if not recovery:
@@ -164,7 +319,9 @@ def normalize_recovery(recovery: Dict) -> Dict:
         "resting_hr": score.get("resting_heart_rate"),
         "spo2": score.get("spo2_percentage"),
         "state": state,
-        "confidence": "calibrating" if score.get("user_calibrating") else "normal"
+        "confidence": "calibrating" if score.get("user_calibrating") else "normal",
+        "score_state": score_state(recovery),
+        "sleep_id": recovery.get("sleep_id"),
     }
 
 
@@ -190,6 +347,11 @@ def normalize_sleep(sleep: Dict) -> Dict:
 
     return {
         "date": sleep.get("start", "")[:10],
+        "id": sleep.get("id"),
+        "score_state": score_state(sleep),
+        "start": sleep.get("start"),
+        "end": sleep.get("end"),
+        "nap": bool(sleep.get("nap")),
         "total_sleep": total_sleep,
         "total_sleep_formatted": format_duration(total_sleep),
         "sleep_efficiency": score.get("sleep_efficiency_percentage"),
