@@ -3,10 +3,11 @@ WHOOP MCP Server using FastMCP standalone
 Exposes WHOOP health data as MCP tools for Poke AI
 """
 
+import asyncio
 import os
 import json
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import urlencode
 
@@ -489,6 +490,105 @@ async def get_trends(metric: str, days: int = 7) -> dict:
 
     except Exception as e:
         return {"error": str(e), "message": f"Failed to fetch {metric} trends"}
+
+
+@mcp.tool(
+    description=(
+        "Get finalized WHOOP recovery, sleep, cycle, and workout records for a "
+        "specific date (YYYY-MM-DD). Use for historical daily audits."
+    ),
+    annotations={"readOnlyHint": True, "openWorldHint": True}
+)
+async def get_historical_day(date: str) -> dict:
+    """Return scored WHOOP records associated with one historical day."""
+    try:
+        target = datetime.strptime(date, "%Y-%m-%d").date()
+    except ValueError:
+        return {"error": "invalid_date", "message": "Date must use YYYY-MM-DD format."}
+
+    age_days = (datetime.now(timezone.utc).date() - target).days
+    if age_days < 0 or age_days > 90:
+        return {"error": "date_out_of_range", "message": "Date must be within the last 90 days."}
+
+    fetch_days = max(2, age_days + 2)
+    limit = min(25, fetch_days * 3)
+    try:
+        recoveries, sleeps, cycles, workouts = await asyncio.gather(
+            whoop_client.get_recovery(limit=limit, days=fetch_days),
+            whoop_client.get_sleep(limit=limit, days=fetch_days),
+            whoop_client.get_cycles(limit=limit, days=fetch_days),
+            whoop_client.get_workouts(limit=25),
+        )
+
+        main_sleeps = [
+            item for item in sleeps
+            if score_state(item) == "SCORED" and not item.get("nap")
+            and (item.get("end") or item.get("start") or "")[:10] == date
+        ]
+        naps = [
+            item for item in sleeps
+            if score_state(item) == "SCORED" and item.get("nap")
+            and (item.get("end") or item.get("start") or "")[:10] == date
+        ]
+        sleep = max(main_sleeps, key=sleep_sort_key) if main_sleeps else None
+        recovery = next((
+            item for item in recoveries
+            if score_state(item) == "SCORED" and sleep
+            and item.get("sleep_id") == sleep.get("id")
+        ), None)
+        cycle = next((
+            item for item in cycles
+            if score_state(item) == "SCORED"
+            and (item.get("start") or "")[:10] == date
+        ), None)
+        day_workouts = [
+            item for item in workouts
+            if score_state(item) == "SCORED"
+            and (item.get("start") or "")[:10] == date
+        ]
+
+        def detailed_sleep(item):
+            if not item:
+                return None
+            result = normalize_sleep(item)
+            score = item.get("score") or {}
+            result.update({
+                "sleep_performance_percentage": score.get("sleep_performance_percentage"),
+                "sleep_consistency_percentage": score.get("sleep_consistency_percentage"),
+                "respiratory_rate": score.get("respiratory_rate"),
+                "sleep_needed": score.get("sleep_needed"),
+            })
+            return result
+
+        def detailed_recovery(item):
+            if not item:
+                return None
+            result = normalize_recovery(item)
+            result["skin_temp_celsius"] = (item.get("score") or {}).get("skin_temp_celsius")
+            return result
+
+        def detailed_workout(item):
+            score = item.get("score") or {}
+            return {
+                "id": item.get("id"), "start": item.get("start"), "end": item.get("end"),
+                "sport_id": item.get("sport_id"), "strain": score.get("strain"),
+                "kilojoule": score.get("kilojoule"),
+                "average_hr": score.get("average_heart_rate"),
+                "max_hr": score.get("max_heart_rate"),
+            }
+
+        return {
+            "date": date,
+            "data_status": "finalized" if sleep and recovery else "incomplete",
+            "recovery": detailed_recovery(recovery),
+            "sleep": detailed_sleep(sleep),
+            "naps": [detailed_sleep(item) for item in naps],
+            "cycle": normalize_cycle(cycle) if cycle else None,
+            "workouts": [detailed_workout(item) for item in day_workouts],
+            "steps": {"available": False, "reason": "WHOOP Developer API v2 does not expose steps."},
+        }
+    except Exception as e:
+        return {"error": str(e), "message": f"Failed to fetch WHOOP data for {date}"}
 
 
 @mcp.tool()
