@@ -27,6 +27,11 @@ from whoop_client import (
     normalize_cycle,
     get_recommended_strain,
     select_stable_whoop_records,
+    score_state,
+    sleep_sort_key,
+    record_local_date,
+    parse_whoop_datetime,
+    format_duration,
 )
 from policy import build_policy_contract
 
@@ -523,12 +528,12 @@ async def get_historical_day(date: str) -> dict:
         main_sleeps = [
             item for item in sleeps
             if score_state(item) == "SCORED" and not item.get("nap")
-            and (item.get("end") or item.get("start") or "")[:10] == date
+            and record_local_date(item, timestamp_field="end") == date
         ]
         naps = [
             item for item in sleeps
             if score_state(item) == "SCORED" and item.get("nap")
-            and (item.get("end") or item.get("start") or "")[:10] == date
+            and record_local_date(item, timestamp_field="end") == date
         ]
         sleep = max(main_sleeps, key=sleep_sort_key) if main_sleeps else None
         recovery = next((
@@ -539,12 +544,12 @@ async def get_historical_day(date: str) -> dict:
         cycle = next((
             item for item in cycles
             if score_state(item) == "SCORED"
-            and (item.get("start") or "")[:10] == date
+            and record_local_date(item) == date
         ), None)
         day_workouts = [
             item for item in workouts
             if score_state(item) == "SCORED"
-            and (item.get("start") or "")[:10] == date
+            and record_local_date(item) == date
         ]
 
         def detailed_sleep(item):
@@ -552,7 +557,13 @@ async def get_historical_day(date: str) -> dict:
                 return None
             result = normalize_sleep(item)
             score = item.get("score") or {}
+            start = parse_whoop_datetime(item.get("start"))
+            end = parse_whoop_datetime(item.get("end"))
+            time_in_bed_seconds = round((end - start).total_seconds()) if start and end else None
             result.update({
+                "local_date": record_local_date(item, timestamp_field="end"),
+                "time_in_bed_seconds": time_in_bed_seconds,
+                "time_in_bed_formatted": format_duration(time_in_bed_seconds),
                 "sleep_performance_percentage": score.get("sleep_performance_percentage"),
                 "sleep_consistency_percentage": score.get("sleep_consistency_percentage"),
                 "respiratory_rate": score.get("respiratory_rate"),
@@ -569,10 +580,13 @@ async def get_historical_day(date: str) -> dict:
 
         def detailed_workout(item):
             score = item.get("score") or {}
+            kilojoules = score.get("kilojoule")
             return {
                 "id": item.get("id"), "start": item.get("start"), "end": item.get("end"),
+                "local_date": record_local_date(item),
                 "sport_id": item.get("sport_id"), "strain": score.get("strain"),
-                "kilojoule": score.get("kilojoule"),
+                "kilojoule": kilojoules,
+                "calories_kcal": round(kilojoules / 4.184, 1) if kilojoules is not None else None,
                 "average_hr": score.get("average_heart_rate"),
                 "max_hr": score.get("max_heart_rate"),
             }
@@ -834,7 +848,7 @@ async def get_poke_context(
                     await _save_finalized_snapshot(stable["recovery"], stable["sleep"], metadata)
                 except Exception as snapshot_err:
                     print(f"[get_poke_context] Snapshot save error (non-fatal): {snapshot_err}")
-            elif metadata.get("whoop_data_freshness") in {"pending_score", "too_fresh", "missing"}:
+            elif metadata.get("whoop_data_freshness") in {"pending_score", "too_fresh", "stale_finalized", "missing"}:
                 snapshot = await database.get_latest_snapshot()
                 fallback = _snapshot_whoop_data(snapshot, metadata)
                 if fallback:
@@ -1867,6 +1881,14 @@ async def api_poke_policy(request: Request) -> JSONResponse:
         next_commitment_time=params.get("next_commitment_time"),
         calendar_context=params.get("calendar_context"),
     )
+    return JSONResponse(result)
+
+
+@mcp.custom_route("/api/daily-summary", methods=["GET"])
+async def api_daily_summary(request: Request) -> JSONResponse:
+    """Expose the complete scored WHOOP day payload for daily automations."""
+    requested_date = request.query_params.get("date") or datetime.now(timezone.utc).date().isoformat()
+    result = await get_historical_day(requested_date)
     return JSONResponse(result)
 
 

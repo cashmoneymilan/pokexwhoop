@@ -12,6 +12,7 @@ WHOOP_TOKEN_URL = "https://api.prod.whoop.com/oauth/oauth2/token"
 # Refresh token 5 minutes before expiry
 TOKEN_REFRESH_BUFFER = timedelta(minutes=5)
 FINALIZATION_DELAY_MINUTES = int(os.getenv("WHOOP_FINALIZATION_DELAY_MINUTES", "30") or "30")
+MAX_CURRENT_SLEEP_AGE_HOURS = int(os.getenv("WHOOP_MAX_CURRENT_SLEEP_AGE_HOURS", "36") or "36")
 
 
 def _aiohttp():
@@ -168,6 +169,21 @@ def parse_whoop_datetime(value: str | None) -> Optional[datetime]:
     return parsed
 
 
+def record_local_date(record: Dict, *, timestamp_field: str = "start") -> str:
+    """Return a WHOOP record's calendar date in its recorded UTC offset."""
+    parsed = parse_whoop_datetime(record.get(timestamp_field))
+    if not parsed:
+        return ""
+    raw_offset = str(record.get("timezone_offset") or "").strip()
+    try:
+        sign = -1 if raw_offset.startswith("-") else 1
+        hours, minutes = (int(part) for part in raw_offset.lstrip("+-").split(":", 1))
+        local_zone = timezone(sign * timedelta(hours=hours, minutes=minutes))
+        return parsed.astimezone(local_zone).date().isoformat()
+    except (TypeError, ValueError):
+        return parsed.date().isoformat()
+
+
 def score_state(record: Dict) -> str:
     return str(record.get("score_state") or "").upper()
 
@@ -223,6 +239,7 @@ def select_stable_whoop_records(
     *,
     now: datetime | None = None,
     finalization_delay_minutes: int = FINALIZATION_DELAY_MINUTES,
+    max_current_sleep_age_hours: int = MAX_CURRENT_SLEEP_AGE_HOURS,
 ) -> Dict:
     """Select only finalized WHOOP sleep/recovery records for policy classification.
 
@@ -238,6 +255,15 @@ def select_stable_whoop_records(
     considered_sleeps = non_nap_sleeps or ordered_sleeps
     latest_sleep = considered_sleeps[0] if considered_sleeps else None
     sleep_status, sleep_reason = _sleep_status(latest_sleep, current_time, finalization_delay_minutes)
+    latest_sleep_end = sleep_end_time(latest_sleep) if latest_sleep else None
+    if sleep_status == "finalized_current" and latest_sleep_end:
+        age_hours = (current_time - latest_sleep_end).total_seconds() / 3600
+        if age_hours > max_current_sleep_age_hours:
+            sleep_status = "stale_finalized"
+            sleep_reason = (
+                f"Latest finalized sleep ended {age_hours:.1f} hours ago; "
+                f"current-data limit is {max_current_sleep_age_hours} hours."
+            )
 
     metadata = {
         "sleep_score_state": score_state(latest_sleep) if latest_sleep else None,
@@ -245,6 +271,7 @@ def select_stable_whoop_records(
         "sleep_end": latest_sleep.get("end") if latest_sleep else None,
         "sleep_is_nap": is_nap(latest_sleep) if latest_sleep else None,
         "finalization_delay_minutes": finalization_delay_minutes,
+        "max_current_sleep_age_hours": max_current_sleep_age_hours,
         "whoop_data_freshness": sleep_status,
         "classification_source": None,
         "freshness_reason": sleep_reason,
@@ -373,10 +400,12 @@ def normalize_cycle(cycle: Dict) -> Dict:
 
     score = cycle.get("score", {})
 
+    kilojoules = score.get("kilojoule")
     return {
-        "date": cycle.get("start", "")[:10],
+        "date": record_local_date(cycle),
         "strain": score.get("strain"),
-        "kilojoules": score.get("kilojoule"),
+        "kilojoules": kilojoules,
+        "calories_kcal": round(kilojoules / 4.184, 1) if kilojoules is not None else None,
         "average_hr": score.get("average_heart_rate"),
         "max_hr": score.get("max_heart_rate")
     }

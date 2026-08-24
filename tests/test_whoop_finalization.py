@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timezone
 
-from whoop_client import select_stable_whoop_records
+from whoop_client import normalize_cycle, record_local_date, select_stable_whoop_records
 
 
 NOW = datetime(2026, 6, 23, 14, 0, tzinfo=timezone.utc)
@@ -97,6 +97,30 @@ class WhoopFinalizationTests(unittest.TestCase):
 
         self.assertIsNone(result["recovery"])
         self.assertEqual(result["metadata"]["whoop_data_freshness"], "too_fresh")
+
+    def test_old_scored_sleep_is_not_labeled_current(self) -> None:
+        result = select_stable_whoop_records(
+            [recovery("sleep-1")],
+            [sleep("sleep-1", end="2026-06-21T01:00:00.000Z")],
+            now=datetime(2026, 6, 23, 14, 0, tzinfo=timezone.utc),
+            max_current_sleep_age_hours=36,
+        )
+        self.assertEqual(result["metadata"]["whoop_data_freshness"], "stale_finalized")
+        self.assertIsNone(result["recovery"])
+
+    def test_record_date_uses_whoop_timezone_offset(self) -> None:
+        record = {"start": "2026-08-23T00:40:00.100Z", "timezone_offset": "-06:00"}
+        self.assertEqual(record_local_date(record), "2026-08-22")
+
+    def test_cycle_energy_is_exposed_as_kilocalories(self) -> None:
+        cycle = {
+            "start": "2026-08-22T06:00:00.000Z",
+            "timezone_offset": "-06:00",
+            "score": {"kilojoule": 4184, "strain": 10},
+        }
+        normalized = normalize_cycle(cycle)
+        self.assertEqual(normalized["date"], "2026-08-22")
+        self.assertEqual(normalized["calories_kcal"], 1000.0)
 
 
 if __name__ == "__main__":
