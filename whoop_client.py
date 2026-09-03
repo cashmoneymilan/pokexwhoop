@@ -3,6 +3,7 @@ WHOOP API client with automatic token refresh.
 """
 
 import asyncio
+import math
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
@@ -137,35 +138,73 @@ class WhoopClient:
                 return await response.json()
         raise Exception("Unauthorized - please re-authorize")
 
+    async def _get_collection(
+        self,
+        endpoint: str,
+        *,
+        start: str | None = None,
+        end: str | None = None,
+        limit: int = 25,
+    ) -> List[Dict]:
+        """Read a WHOOP collection across every page needed for ``limit`` records."""
+        requested = max(1, int(limit))
+        page_size = min(25, requested)
+        params: Dict[str, Any] = {"limit": page_size}
+        if start:
+            params["start"] = start
+        if end:
+            params["end"] = end
+
+        records: List[Dict] = []
+        next_token: str | None = None
+        seen_tokens: set[str] = set()
+        max_pages = math.ceil(requested / page_size) + 1
+        for _ in range(max_pages):
+            page_params = dict(params)
+            if next_token:
+                page_params["nextToken"] = next_token
+            data = await self._request(endpoint, page_params)
+            records.extend(data.get("records") or [])
+            next_token = data.get("next_token")
+            if len(records) >= requested or not next_token or next_token in seen_tokens:
+                break
+            seen_tokens.add(next_token)
+        return records[:requested]
+
+    @staticmethod
+    def _date_range(days: int) -> tuple[str, str]:
+        now = datetime.now(timezone.utc)
+        end = now.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        start = (now - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        return start, end
+
     async def get_recovery(self, limit: int = 1, days: int = 7) -> List[Dict]:
         """Get recovery data."""
-        # V2 API uses start/end date range
-        end = datetime.now().strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        data = await self._request("/v2/recovery", {"start": start, "end": end, "limit": limit})
-        print(f"[WHOOP] Recovery response: {data}")
-        return data.get("records", [])
+        start, end = self._date_range(days)
+        return await self._get_collection(
+            "/v2/recovery", start=start, end=end, limit=limit
+        )
 
     async def get_sleep(self, limit: int = 1, days: int = 7) -> List[Dict]:
         """Get sleep data."""
-        # V2 API uses /v2/activity/sleep with date range
-        end = datetime.now().strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        data = await self._request("/v2/activity/sleep", {"start": start, "end": end, "limit": limit})
-        print(f"[WHOOP] Sleep response: {data}")
-        return data.get("records", [])
+        start, end = self._date_range(days)
+        return await self._get_collection(
+            "/v2/activity/sleep", start=start, end=end, limit=limit
+        )
 
     async def get_cycles(self, limit: int = 1, days: int = 7) -> List[Dict]:
         """Get cycle/strain data."""
-        end = datetime.now().strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        data = await self._request("/v2/cycle", {"start": start, "end": end, "limit": limit})
-        return data.get("records", [])
+        start, end = self._date_range(days)
+        return await self._get_collection(
+            "/v2/cycle", start=start, end=end, limit=limit
+        )
 
-    async def get_workouts(self, limit: int = 7) -> List[Dict]:
+    async def get_workouts(self, limit: int = 7, days: int = 7) -> List[Dict]:
         """Get workout data."""
-        data = await self._request("/v2/activity/workout", {"limit": limit})
-        return data.get("records", [])
+        start, end = self._date_range(days)
+        return await self._get_collection(
+            "/v2/activity/workout", start=start, end=end, limit=limit
+        )
 
 
 # Helper functions to normalize WHOOP data

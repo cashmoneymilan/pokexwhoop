@@ -527,14 +527,16 @@ async def get_historical_day(date: str) -> dict:
         return {"error": "date_out_of_range", "message": "Date must be within the last 90 days."}
 
     fetch_days = max(2, age_days + 2)
-    limit = min(25, fetch_days * 3)
+    # Collections are paginated at 25 records per page. Keep enough headroom
+    # for naps, workouts, and revised activities across the requested window.
+    limit = min(300, fetch_days * 3)
     try:
         # Calls are intentionally sequential. WhoopClient also serializes them,
         # protecting rotating OAuth refresh tokens across all request paths.
         recoveries = await whoop_client.get_recovery(limit=limit, days=fetch_days)
         sleeps = await whoop_client.get_sleep(limit=limit, days=fetch_days)
         cycles = await whoop_client.get_cycles(limit=limit, days=fetch_days)
-        workouts = await whoop_client.get_workouts(limit=25)
+        workouts = await whoop_client.get_workouts(limit=limit, days=fetch_days)
         overrides = load_overrides()
         observed_at = datetime.now(timezone.utc)
 
