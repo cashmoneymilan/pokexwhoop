@@ -85,6 +85,30 @@ class DailySummaryIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result["sleep"])
         self.assertIsNone(result["recovery"])
 
+    async def test_range_fetches_each_collection_once(self):
+        sleeps = [sleep_record("2026-09-02", "sleep-2"), sleep_record("2026-09-01", "sleep-1")]
+        recoveries = [
+            recovery_record("2026-09-02", "sleep-2", 70),
+            recovery_record("2026-09-01", "sleep-1", 60),
+        ]
+        with (
+            patch.object(server.whoop_client, "get_recovery", AsyncMock(return_value=recoveries)) as get_recovery,
+            patch.object(server.whoop_client, "get_sleep", AsyncMock(return_value=sleeps)) as get_sleep,
+            patch.object(server.whoop_client, "get_cycles", AsyncMock(return_value=[])) as get_cycles,
+            patch.object(server.whoop_client, "get_workouts", AsyncMock(return_value=[])) as get_workouts,
+            patch.object(server.database, "save_daily_report", AsyncMock(return_value={"revision": 1, "is_revision": False, "snapshot_hash": "abc"})),
+            patch.object(server.database, "update_daily_sync_job", AsyncMock()),
+            patch.object(server.database, "enqueue_daily_sync", AsyncMock()),
+        ):
+            result = await server.get_historical_range("2026-09-01", "2026-09-02")
+
+        self.assertEqual(result["count"], 2)
+        self.assertEqual([item["date"] for item in result["reports"]], ["2026-09-01", "2026-09-02"])
+        get_recovery.assert_awaited_once()
+        get_sleep.assert_awaited_once()
+        get_cycles.assert_awaited_once()
+        get_workouts.assert_awaited_once()
+
 
 if __name__ == "__main__":
     unittest.main()

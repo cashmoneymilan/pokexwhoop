@@ -575,6 +575,75 @@ async def get_historical_day(date: str) -> dict:
         return {"error": str(e), "message": f"Failed to fetch WHOOP data for {date}"}
 
 
+async def get_historical_range(start_date: str, end_date: str) -> dict:
+    """Build and persist a bounded date range with one sequential WHOOP fetch."""
+    try:
+        start = datetime.strptime(start_date, "%Y-%m-%d").date()
+        end = datetime.strptime(end_date, "%Y-%m-%d").date()
+    except ValueError:
+        return {"error": "invalid_date", "message": "Dates must use YYYY-MM-DD format."}
+
+    today = datetime.now(timezone.utc).date()
+    if start > end:
+        return {"error": "invalid_range", "message": "start_date must not be after end_date."}
+    if end > today or (today - start).days > 90:
+        return {"error": "date_out_of_range", "message": "Range must be within the last 90 days and not in the future."}
+
+    fetch_days = max(2, (today - start).days + 2)
+    limit = min(300, fetch_days * 3)
+    try:
+        recoveries = await whoop_client.get_recovery(limit=limit, days=fetch_days)
+        sleeps = await whoop_client.get_sleep(limit=limit, days=fetch_days)
+        cycles = await whoop_client.get_cycles(limit=limit, days=fetch_days)
+        workouts = await whoop_client.get_workouts(limit=limit, days=fetch_days)
+        overrides = load_overrides()
+        observed_at = datetime.now(timezone.utc)
+        reports = []
+        current = start
+        while current <= end:
+            day = current.isoformat()
+            report, selected = _build_daily_report(
+                day, recoveries, sleeps, cycles, workouts, overrides, observed_at
+            )
+            previous_dates = sorted({
+                record_local_date(item, timestamp_field="end")
+                for item in sleeps
+                if not item.get("nap") and record_local_date(item, timestamp_field="end") < day
+            }, reverse=True)
+            previous_report = None
+            for previous_date in previous_dates:
+                candidate, _ = _build_daily_report(
+                    previous_date, recoveries, sleeps, cycles, workouts, overrides, observed_at
+                )
+                if candidate.get("valid_for_model"):
+                    previous_report = candidate
+                    break
+            report["comparison"] = (
+                numeric_comparison(report, previous_report)
+                if previous_report and report.get("valid_for_model") else None
+            )
+            provenance = source_provenance(selected, retrieved_at=observed_at)
+            provenance["manual_override"] = overrides.get(day)
+            report["snapshot"] = await database.save_daily_report(report, provenance)
+            report["provenance"] = provenance
+            retry = report.get("retry")
+            if retry:
+                await database.enqueue_daily_sync(day, datetime.fromisoformat(retry["retry_at"]))
+            else:
+                await database.update_daily_sync_job(day, completed=True)
+            reports.append(report)
+            current += timedelta(days=1)
+        return {
+            "start_date": start_date,
+            "end_date": end_date,
+            "count": len(reports),
+            "pipeline_version": PIPELINE_VERSION,
+            "reports": reports,
+        }
+    except Exception as error:
+        return {"error": str(error), "message": "Failed to fetch WHOOP date range."}
+
+
 def _detailed_sleep(item: Optional[dict]) -> Optional[dict]:
     if not item:
         return None
@@ -1968,6 +2037,21 @@ async def api_daily_summary(request: Request) -> JSONResponse:
             headers={"Retry-After": str(retry["retry_after_seconds"])},
         )
     return JSONResponse(result)
+
+
+@mcp.custom_route("/api/daily-summary-range", methods=["GET"])
+async def api_daily_summary_range(request: Request) -> JSONResponse:
+    """Expose a bounded backfill range without repeating WHOOP collection scans."""
+    start_date = request.query_params.get("start")
+    end_date = request.query_params.get("end")
+    if not start_date or not end_date:
+        return JSONResponse(
+            {"error": "missing_range", "message": "start and end are required."},
+            status_code=400,
+        )
+    result = await get_historical_range(start_date, end_date)
+    status_code = 400 if result.get("error") in {"invalid_date", "invalid_range", "date_out_of_range"} else 200
+    return JSONResponse(result, status_code=status_code)
 
 
 @mcp.custom_route("/api/record-checkin", methods=["POST"])
