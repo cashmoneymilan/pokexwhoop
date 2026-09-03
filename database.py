@@ -3,6 +3,8 @@ PostgreSQL database operations for WHOOP token and snapshot storage.
 """
 
 import asyncpg
+import hashlib
+import json
 import os
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
@@ -60,6 +62,43 @@ async def init_db():
         await conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_snapshots_date
             ON whoop_daily_snapshots(date DESC)
+        """)
+
+        # Keep the legacy table as the current materialized view while storing
+        # every changed observation in an append-only revision table.
+        await conn.execute("ALTER TABLE whoop_daily_snapshots ADD COLUMN IF NOT EXISTS data_status TEXT")
+        await conn.execute("ALTER TABLE whoop_daily_snapshots ADD COLUMN IF NOT EXISTS snapshot_hash TEXT")
+        await conn.execute("ALTER TABLE whoop_daily_snapshots ADD COLUMN IF NOT EXISTS revision INTEGER")
+        await conn.execute("ALTER TABLE whoop_daily_snapshots ADD COLUMN IF NOT EXISTS report_data TEXT")
+        await conn.execute("ALTER TABLE whoop_daily_snapshots ADD COLUMN IF NOT EXISTS provenance TEXT")
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS whoop_daily_snapshot_revisions (
+                id BIGSERIAL PRIMARY KEY,
+                date TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                snapshot_hash TEXT NOT NULL,
+                data_status TEXT NOT NULL,
+                report_data TEXT NOT NULL,
+                provenance TEXT NOT NULL,
+                observed_at TIMESTAMPTZ DEFAULT NOW(),
+                UNIQUE(date, revision)
+            )
+        """)
+        await conn.execute("""ALTER TABLE whoop_daily_snapshot_revisions
+            DROP CONSTRAINT IF EXISTS whoop_daily_snapshot_revisions_date_snapshot_hash_key""")
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_snapshot_revisions_date
+            ON whoop_daily_snapshot_revisions(date DESC, revision DESC)
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS whoop_daily_sync_jobs (
+                date TEXT PRIMARY KEY,
+                status TEXT NOT NULL DEFAULT 'pending',
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at TIMESTAMPTZ NOT NULL,
+                last_error TEXT,
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
         """)
         print("[DB] Initialized PostgreSQL base tables")
     finally:
@@ -165,7 +204,9 @@ async def get_latest_snapshot() -> Optional[Dict[str, Any]]:
     conn = await get_conn()
     try:
         row = await conn.fetchrow(
-            "SELECT * FROM whoop_daily_snapshots ORDER BY date DESC LIMIT 1"
+            """SELECT * FROM whoop_daily_snapshots
+               WHERE data_status = 'finalized' OR data_status IS NULL
+               ORDER BY date DESC LIMIT 1"""
         )
         return dict(row) if row else None
     finally:
@@ -193,6 +234,152 @@ async def get_last_sync_time() -> Optional[str]:
             "SELECT MAX(updated_at) FROM whoop_daily_snapshots"
         )
         return str(result) if result else None
+    finally:
+        await conn.close()
+
+
+async def save_daily_report(report: Dict[str, Any], provenance: Dict[str, Any]) -> Dict[str, Any]:
+    """Persist the current view and append a revision only when content changes."""
+    fingerprint_report = dict(report)
+    fingerprint_report.pop("retry", None)
+    fingerprint_report.pop("snapshot", None)
+    fingerprint_report.pop("provenance", None)
+    fingerprint_provenance = dict(provenance)
+    fingerprint_provenance.pop("retrieved_at", None)
+    canonical = json.dumps(
+        {"report": fingerprint_report, "provenance": fingerprint_provenance},
+        sort_keys=True, separators=(",", ":"), default=str,
+    )
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    provenance_json = json.dumps(provenance, sort_keys=True, default=str)
+    report_json = json.dumps(report, sort_keys=True, default=str)
+    day = report["date"]
+    status = report["data_status"]
+    recovery = report.get("recovery") or {}
+    sleep = report.get("sleep") or {}
+    cycle = report.get("cycle") or {}
+
+    conn = await get_conn()
+    try:
+        async with conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", day)
+            previous = await conn.fetchrow(
+                """SELECT revision, snapshot_hash FROM whoop_daily_snapshot_revisions
+                   WHERE date = $1 ORDER BY revision DESC LIMIT 1 FOR UPDATE""",
+                day,
+            )
+            if previous and previous["snapshot_hash"] == digest:
+                revision = previous["revision"]
+                revised = False
+            else:
+                revision = (previous["revision"] if previous else 0) + 1
+                await conn.execute(
+                    """INSERT INTO whoop_daily_snapshot_revisions
+                       (date, revision, snapshot_hash, data_status, report_data, provenance)
+                       VALUES ($1, $2, $3, $4, $5, $6)""",
+                    day, revision, digest, status, report_json, provenance_json,
+                )
+                revised = previous is not None
+
+            await conn.execute(
+                """INSERT INTO whoop_daily_snapshots
+                   (date, recovery_score, recovery_state, strain, sleep_duration,
+                    sleep_debt, sleep_efficiency, sleep_disturbances, hrv, resting_hr,
+                    raw_data, data_status, snapshot_hash, revision, report_data, provenance)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+                   ON CONFLICT (date) DO UPDATE SET
+                     recovery_score=EXCLUDED.recovery_score,
+                     recovery_state=EXCLUDED.recovery_state,
+                     strain=EXCLUDED.strain,
+                     sleep_duration=EXCLUDED.sleep_duration,
+                     sleep_debt=EXCLUDED.sleep_debt,
+                     sleep_efficiency=EXCLUDED.sleep_efficiency,
+                     sleep_disturbances=EXCLUDED.sleep_disturbances,
+                     hrv=EXCLUDED.hrv,
+                     resting_hr=EXCLUDED.resting_hr,
+                     raw_data=EXCLUDED.raw_data,
+                     data_status=EXCLUDED.data_status,
+                     snapshot_hash=EXCLUDED.snapshot_hash,
+                     revision=EXCLUDED.revision,
+                     report_data=EXCLUDED.report_data,
+                     provenance=EXCLUDED.provenance,
+                     updated_at=NOW()""",
+                day, recovery.get("recovery_score"), recovery.get("state"), cycle.get("strain"),
+                sleep.get("total_sleep"), sleep.get("sleep_debt"), sleep.get("sleep_efficiency"),
+                sleep.get("disturbances"), recovery.get("hrv"), recovery.get("resting_hr"),
+                report_json, status, digest, revision, report_json, provenance_json,
+            )
+            return {"revision": revision, "snapshot_hash": digest, "is_revision": revised}
+    finally:
+        await conn.close()
+
+
+async def get_daily_report(date: str) -> Optional[Dict[str, Any]]:
+    conn = await get_conn()
+    try:
+        row = await conn.fetchrow(
+            "SELECT report_data, revision, snapshot_hash, updated_at FROM whoop_daily_snapshots WHERE date = $1",
+            date,
+        )
+        if not row or not row["report_data"]:
+            return None
+        report = json.loads(row["report_data"])
+        report["snapshot"] = {
+            "revision": row["revision"],
+            "snapshot_hash": row["snapshot_hash"],
+            "stored_at": str(row["updated_at"]),
+        }
+        return report
+    finally:
+        await conn.close()
+
+
+async def enqueue_daily_sync(date: str, retry_at: datetime) -> None:
+    conn = await get_conn()
+    try:
+        await conn.execute(
+            """INSERT INTO whoop_daily_sync_jobs(date, status, next_attempt_at)
+               VALUES ($1, 'pending', $2)
+               ON CONFLICT (date) DO UPDATE SET
+                 status=CASE WHEN whoop_daily_sync_jobs.attempt_count + 1 >= 12 THEN 'failed' ELSE 'pending' END,
+                 attempt_count=whoop_daily_sync_jobs.attempt_count + 1,
+                 next_attempt_at=EXCLUDED.next_attempt_at, updated_at=NOW()""",
+            date, retry_at,
+        )
+    finally:
+        await conn.close()
+
+
+async def get_due_daily_sync_jobs(limit: int = 3) -> List[Dict[str, Any]]:
+    conn = await get_conn()
+    try:
+        rows = await conn.fetch(
+            """SELECT * FROM whoop_daily_sync_jobs
+               WHERE status='pending' AND next_attempt_at <= NOW()
+               ORDER BY next_attempt_at LIMIT $1""",
+            limit,
+        )
+        return [dict(row) for row in rows]
+    finally:
+        await conn.close()
+
+
+async def update_daily_sync_job(date: str, *, completed: bool, retry_at: Optional[datetime] = None, error: Optional[str] = None) -> None:
+    conn = await get_conn()
+    try:
+        if completed:
+            await conn.execute(
+                "UPDATE whoop_daily_sync_jobs SET status='completed', attempt_count=attempt_count+1, last_error=NULL, updated_at=NOW() WHERE date=$1",
+                date,
+            )
+        else:
+            await conn.execute(
+                """UPDATE whoop_daily_sync_jobs SET
+                   status=CASE WHEN attempt_count + 1 >= 12 THEN 'failed' ELSE 'pending' END,
+                   attempt_count=attempt_count+1,
+                   next_attempt_at=$2, last_error=$3, updated_at=NOW() WHERE date=$1""",
+                date, retry_at, error,
+            )
     finally:
         await conn.close()
 

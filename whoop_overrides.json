@@ -1,0 +1,8 @@
+{
+  "2026-08-23": {
+    "invalidated": true,
+    "reason": "Manual invalidation: WHOOP reported a 04:55 wake time; user confirmed waking around 10:00.",
+    "source": "user_confirmed",
+    "recorded_at": "2026-09-03"
+  }
+}

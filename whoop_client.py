@@ -2,6 +2,7 @@
 WHOOP API client with automatic token refresh.
 """
 
+import asyncio
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
@@ -33,6 +34,10 @@ class WhoopClient:
         self.client_id = os.getenv("WHOOP_CLIENT_ID")
         self.client_secret = os.getenv("WHOOP_CLIENT_SECRET")
         self._session = None
+        # WHOOP rotates refresh tokens. Serialize refreshes and API reads so two
+        # callers cannot exchange the same refresh token or race a retry.
+        self._refresh_lock = asyncio.Lock()
+        self._request_lock = asyncio.Lock()
 
     async def _get_session(self):
         if self._session is None or self._session.closed:
@@ -46,25 +51,35 @@ class WhoopClient:
 
     async def _ensure_valid_token(self) -> str:
         """Ensure we have a valid access token, refreshing if necessary."""
-        database = _database()
-        token = await database.get_token()
-
-        if not token:
-            raise Exception("No WHOOP token found. Please authorize at /oauth/whoop/start")
-
-        expires_at = datetime.fromisoformat(token["expires_at"].replace("Z", "+00:00"))
-        now = datetime.now(expires_at.tzinfo) if expires_at.tzinfo else datetime.now()
-
-        # Refresh if expiring soon
-        if expires_at - now < TOKEN_REFRESH_BUFFER:
-            print("[WHOOP] Token expiring soon, refreshing...")
-            await self._refresh_token(token["refresh_token"])
+        async with self._refresh_lock:
+            database = _database()
             token = await database.get_token()
 
-        return token["access_token"]
+            if not token:
+                raise Exception("No WHOOP token found. Please authorize at /oauth/whoop/start")
+
+            expires_at = datetime.fromisoformat(token["expires_at"].replace("Z", "+00:00"))
+            now = datetime.now(expires_at.tzinfo) if expires_at.tzinfo else datetime.now()
+
+            if expires_at - now < TOKEN_REFRESH_BUFFER:
+                print("[WHOOP] Token expiring soon, refreshing...")
+                await self._refresh_token_unlocked(token["refresh_token"])
+                token = await database.get_token()
+
+            return token["access_token"]
 
     async def _refresh_token(self, refresh_token: str):
         """Refresh the access token."""
+        async with self._refresh_lock:
+            # A waiting caller may hold an obsolete rotating refresh token. Use
+            # the latest durable token after acquiring the lock when available.
+            database = _database()
+            latest = await database.get_token()
+            current_refresh = (latest or {}).get("refresh_token") or refresh_token
+            await self._refresh_token_unlocked(current_refresh)
+
+    async def _refresh_token_unlocked(self, refresh_token: str):
+        """Refresh while the caller holds ``_refresh_lock``."""
         database = _database()
         session = await self._get_session()
 
@@ -95,33 +110,32 @@ class WhoopClient:
 
     async def _request(self, endpoint: str, params: Dict = None) -> Dict:
         """Make an authenticated request to the WHOOP API."""
+        async with self._request_lock:
+            return await self._request_unlocked(endpoint, params)
+
+    async def _request_unlocked(self, endpoint: str, params: Dict = None) -> Dict:
         access_token = await self._ensure_valid_token()
         session = await self._get_session()
-
         url = f"{WHOOP_API_BASE}{endpoint}"
         print(f"[WHOOP] Requesting: {url} with params: {params}")
 
-        async with session.get(
-            url,
-            headers={"Authorization": f"Bearer {access_token}"},
-            params=params
-        ) as response:
-            print(f"[WHOOP] Response status: {response.status}")
-            if response.status == 401:
-                # Try refreshing token and retry
-                database = _database()
-                token = await database.get_token()
-                if token:
+        for attempt in range(2):
+            async with session.get(url, headers={"Authorization": f"Bearer {access_token}"}, params=params) as response:
+                print(f"[WHOOP] Response status: {response.status}")
+                if response.status == 401 and attempt == 0:
+                    database = _database()
+                    token = await database.get_token()
+                    if not token:
+                        raise Exception("Unauthorized - please re-authorize")
                     await self._refresh_token(token["refresh_token"])
-                    return await self._request(endpoint, params)
-                raise Exception("Unauthorized - please re-authorize")
-
-            if response.status != 200:
-                error_text = await response.text()
-                print(f"[WHOOP] Error {response.status} for {url}: {error_text}")
-                raise Exception(f"WHOOP API error: {response.status} - {error_text}")
-
-            return await response.json()
+                    access_token = await self._ensure_valid_token()
+                    continue
+                if response.status != 200:
+                    error_text = await response.text()
+                    print(f"[WHOOP] Error {response.status} for {url}: {error_text}")
+                    raise Exception(f"WHOOP API error: {response.status} - {error_text}")
+                return await response.json()
+        raise Exception("Unauthorized - please re-authorize")
 
     async def get_recovery(self, limit: int = 1, days: int = 7) -> List[Dict]:
         """Get recovery data."""
@@ -340,7 +354,7 @@ def normalize_recovery(recovery: Dict) -> Dict:
         state = "red"
 
     return {
-        "date": recovery.get("created_at", "")[:10],
+        "date": record_local_date(recovery, timestamp_field="created_at"),
         "recovery_score": recovery_score,
         "hrv": score.get("hrv_rmssd_milli"),
         "resting_hr": score.get("resting_heart_rate"),
@@ -373,12 +387,13 @@ def normalize_sleep(sleep: Dict) -> Dict:
     total_sleep = ms_to_sec(total_sleep_ms) if total_sleep_ms > 0 else None
 
     return {
-        "date": sleep.get("start", "")[:10],
+        "date": record_local_date(sleep, timestamp_field="end"),
         "id": sleep.get("id"),
         "score_state": score_state(sleep),
         "start": sleep.get("start"),
         "end": sleep.get("end"),
         "nap": bool(sleep.get("nap")),
+        "timezone_offset": sleep.get("timezone_offset"),
         "total_sleep": total_sleep,
         "total_sleep_formatted": format_duration(total_sleep),
         "sleep_efficiency": score.get("sleep_efficiency_percentage"),

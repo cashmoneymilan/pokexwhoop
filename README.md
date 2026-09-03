@@ -66,6 +66,19 @@ WHOOP API ──OAuth──▶ PokeXWhoop Server ──MCP/SSE──▶ Poke AI
 - **[Technical Appendix](./TECHNICAL.md)** — OAuth flow, rate limits, schemas
 - **[Changelog](./CHANGELOG.md)** — Usage notes and lessons learned
 
+## Reliable daily data
+
+`GET /api/daily-summary?date=YYYY-MM-DD` always refetches the latest WHOOP records,
+applies manual overrides, validates matched SCORED sleep/recovery records, and saves
+an append-only revision when the normalized record or upstream revision changes.
+Pending summaries return HTTP 202 with `Retry-After` and are also placed in a durable
+retry queue. Calorie totals include `partial_day` or `completed_day`; only completed
+days are marked valid for the weight-loss model.
+
+Manual invalidations and dotted-path corrections live in `whoop_overrides.json` so
+they are explicit, reviewable, and deployed with the service. Invalidated records
+never expose measurements as model-ready data.
+
 ## Tech Stack
 
 - Python 3.11 + FastAPI + FastMCP

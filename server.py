@@ -34,6 +34,17 @@ from whoop_client import (
     format_duration,
 )
 from policy import build_policy_contract
+from daily_pipeline import (
+    PIPELINE_VERSION,
+    apply_override,
+    day_completion,
+    evaluate_day_status,
+    load_overrides,
+    numeric_comparison,
+    retry_metadata,
+    select_day_records,
+    source_provenance,
+)
 
 load_dotenv()
 
@@ -505,7 +516,7 @@ async def get_trends(metric: str, days: int = 7) -> dict:
     annotations={"readOnlyHint": True, "openWorldHint": True}
 )
 async def get_historical_day(date: str) -> dict:
-    """Return scored WHOOP records associated with one historical day."""
+    """Return the latest validated WHOOP observation for one local day."""
     try:
         target = datetime.strptime(date, "%Y-%m-%d").date()
     except ValueError:
@@ -518,91 +529,145 @@ async def get_historical_day(date: str) -> dict:
     fetch_days = max(2, age_days + 2)
     limit = min(25, fetch_days * 3)
     try:
-        recoveries, sleeps, cycles, workouts = await asyncio.gather(
-            whoop_client.get_recovery(limit=limit, days=fetch_days),
-            whoop_client.get_sleep(limit=limit, days=fetch_days),
-            whoop_client.get_cycles(limit=limit, days=fetch_days),
-            whoop_client.get_workouts(limit=25),
+        # Calls are intentionally sequential. WhoopClient also serializes them,
+        # protecting rotating OAuth refresh tokens across all request paths.
+        recoveries = await whoop_client.get_recovery(limit=limit, days=fetch_days)
+        sleeps = await whoop_client.get_sleep(limit=limit, days=fetch_days)
+        cycles = await whoop_client.get_cycles(limit=limit, days=fetch_days)
+        workouts = await whoop_client.get_workouts(limit=25)
+        overrides = load_overrides()
+        observed_at = datetime.now(timezone.utc)
+
+        report, selected = _build_daily_report(
+            date, recoveries, sleeps, cycles, workouts, overrides, observed_at
         )
 
-        main_sleeps = [
-            item for item in sleeps
-            if score_state(item) == "SCORED" and not item.get("nap")
-            and record_local_date(item, timestamp_field="end") == date
-        ]
-        naps = [
-            item for item in sleeps
-            if score_state(item) == "SCORED" and item.get("nap")
-            and record_local_date(item, timestamp_field="end") == date
-        ]
-        sleep = max(main_sleeps, key=sleep_sort_key) if main_sleeps else None
-        recovery = next((
-            item for item in recoveries
-            if score_state(item) == "SCORED" and sleep
-            and item.get("sleep_id") == sleep.get("id")
-        ), None)
-        cycle = next((
-            item for item in cycles
-            if score_state(item) == "SCORED"
-            and record_local_date(item) == date
-        ), None)
-        day_workouts = [
-            item for item in workouts
-            if score_state(item) == "SCORED"
-            and record_local_date(item) == date
-        ]
+        previous_dates = sorted({
+            record_local_date(item, timestamp_field="end")
+            for item in sleeps
+            if not item.get("nap") and record_local_date(item, timestamp_field="end") < date
+        }, reverse=True)
+        previous_report = None
+        for previous_date in previous_dates:
+            candidate, _ = _build_daily_report(
+                previous_date, recoveries, sleeps, cycles, workouts, overrides, observed_at
+            )
+            if candidate.get("valid_for_model"):
+                previous_report = candidate
+                break
+        report["comparison"] = numeric_comparison(report, previous_report) if previous_report and report.get("valid_for_model") else None
 
-        def detailed_sleep(item):
-            if not item:
-                return None
-            result = normalize_sleep(item)
-            score = item.get("score") or {}
-            start = parse_whoop_datetime(item.get("start"))
-            end = parse_whoop_datetime(item.get("end"))
-            time_in_bed_seconds = round((end - start).total_seconds()) if start and end else None
-            result.update({
-                "local_date": record_local_date(item, timestamp_field="end"),
-                "time_in_bed_seconds": time_in_bed_seconds,
-                "time_in_bed_formatted": format_duration(time_in_bed_seconds),
-                "sleep_performance_percentage": score.get("sleep_performance_percentage"),
-                "sleep_consistency_percentage": score.get("sleep_consistency_percentage"),
-                "respiratory_rate": score.get("respiratory_rate"),
-                "sleep_needed": score.get("sleep_needed"),
-            })
-            return result
+        provenance = source_provenance(selected, retrieved_at=observed_at)
+        provenance["manual_override"] = overrides.get(date)
+        snapshot = await database.save_daily_report(report, provenance)
+        report["snapshot"] = snapshot
+        report["provenance"] = provenance
 
-        def detailed_recovery(item):
-            if not item:
-                return None
-            result = normalize_recovery(item)
-            result["skin_temp_celsius"] = (item.get("score") or {}).get("skin_temp_celsius")
-            return result
-
-        def detailed_workout(item):
-            score = item.get("score") or {}
-            kilojoules = score.get("kilojoule")
-            return {
-                "id": item.get("id"), "start": item.get("start"), "end": item.get("end"),
-                "local_date": record_local_date(item),
-                "sport_id": item.get("sport_id"), "strain": score.get("strain"),
-                "kilojoule": kilojoules,
-                "calories_kcal": round(kilojoules / 4.184, 1) if kilojoules is not None else None,
-                "average_hr": score.get("average_heart_rate"),
-                "max_hr": score.get("max_heart_rate"),
-            }
-
-        return {
-            "date": date,
-            "data_status": "finalized" if sleep and recovery else "incomplete",
-            "recovery": detailed_recovery(recovery),
-            "sleep": detailed_sleep(sleep),
-            "naps": [detailed_sleep(item) for item in naps],
-            "cycle": normalize_cycle(cycle) if cycle else None,
-            "workouts": [detailed_workout(item) for item in day_workouts],
-            "steps": {"available": False, "reason": "WHOOP Developer API v2 does not expose steps."},
-        }
+        retry = report.get("retry")
+        if retry:
+            await database.enqueue_daily_sync(date, datetime.fromisoformat(retry["retry_at"]))
+        else:
+            await database.update_daily_sync_job(date, completed=True)
+        return report
     except Exception as e:
         return {"error": str(e), "message": f"Failed to fetch WHOOP data for {date}"}
+
+
+def _detailed_sleep(item: Optional[dict]) -> Optional[dict]:
+    if not item:
+        return None
+    result = normalize_sleep(item)
+    score = item.get("score") or {}
+    start = parse_whoop_datetime(item.get("start"))
+    end = parse_whoop_datetime(item.get("end"))
+    time_in_bed_seconds = round((end - start).total_seconds()) if start and end and end > start else None
+    needed = score.get("sleep_needed") or {}
+    result.update({
+        "local_date": record_local_date(item, timestamp_field="end"),
+        "time_in_bed_seconds": time_in_bed_seconds,
+        "time_in_bed_formatted": format_duration(time_in_bed_seconds),
+        "sleep_performance_percentage": score.get("sleep_performance_percentage"),
+        "sleep_consistency_percentage": score.get("sleep_consistency_percentage"),
+        "respiratory_rate": score.get("respiratory_rate"),
+        "sleep_needed": {
+            "baseline_seconds": round(needed["baseline_milli"] / 1000) if needed.get("baseline_milli") is not None else None,
+            "sleep_debt_seconds": round(needed["need_from_sleep_debt_milli"] / 1000) if needed.get("need_from_sleep_debt_milli") is not None else None,
+            "recent_strain_seconds": round(needed["need_from_recent_strain_milli"] / 1000) if needed.get("need_from_recent_strain_milli") is not None else None,
+            "recent_nap_seconds": round(needed["need_from_recent_nap_milli"] / 1000) if needed.get("need_from_recent_nap_milli") is not None else None,
+        },
+    })
+    return result
+
+
+def _detailed_recovery(item: Optional[dict]) -> Optional[dict]:
+    if not item:
+        return None
+    result = normalize_recovery(item)
+    result["skin_temp_celsius"] = (item.get("score") or {}).get("skin_temp_celsius")
+    return result
+
+
+def _detailed_workout(item: dict) -> dict:
+    score = item.get("score") or {}
+    kilojoules = score.get("kilojoule")
+    return {
+        "id": item.get("id"), "start": item.get("start"), "end": item.get("end"),
+        "local_date": record_local_date(item), "sport_id": item.get("sport_id"),
+        "score_state": score_state(item), "strain": score.get("strain"),
+        "kilojoules": kilojoules,
+        "calories_kcal": round(kilojoules / 4.184, 1) if kilojoules is not None else None,
+        "average_hr": score.get("average_heart_rate"), "max_hr": score.get("max_heart_rate"),
+    }
+
+
+def _build_daily_report(date, recoveries, sleeps, cycles, workouts, overrides, observed_at):
+    selected = select_day_records(date, recoveries, sleeps, cycles, workouts)
+    override = overrides.get(date) or {}
+    for record_type in ("sleep", "recovery", "cycle"):
+        selected[record_type] = apply_override(record_type, selected.get(record_type), override)
+    selected["naps"] = [apply_override("nap", item, override) for item in selected.get("naps") or []]
+    selected["workouts"] = [apply_override("workout", item, override) for item in selected.get("workouts") or []]
+
+    status = evaluate_day_status(date, selected, override, now=observed_at)
+    invalid = status["data_status"] == "manually_invalidated"
+    recovery = None if invalid else _detailed_recovery(selected.get("recovery"))
+    sleep = None if invalid else _detailed_sleep(selected.get("sleep"))
+    if recovery:
+        recovery["date"] = date
+    cycle_record = selected.get("cycle")
+    cycle = None if invalid or score_state(cycle_record or {}) != "SCORED" else normalize_cycle(cycle_record)
+    completion = day_completion(date, selected.get("cycle"), now=observed_at)
+    if cycle:
+        cycle["day_completion"] = completion
+        cycle["calorie_status"] = completion
+        cycle["calorie_caveat"] = "WHOOP energy expenditure is an estimate, not an exact measurement."
+
+    report = {
+        "date": date,
+        **status,
+        "day_completion": completion,
+        "calories_valid_for_weight_loss_model": bool(cycle) and completion == "completed_day" and status["valid_for_model"],
+        "recovery": recovery,
+        "sleep": sleep,
+        "naps": [] if invalid else [_detailed_sleep(item) for item in selected.get("naps") or [] if score_state(item) == "SCORED"],
+        "cycle": cycle,
+        "workouts": [] if invalid else [_detailed_workout(item) for item in selected.get("workouts") or [] if score_state(item) == "SCORED"],
+        "manual_override": override or None,
+        "missing_fields": [],
+        "steps": {"available": False, "reason": "WHOOP Developer API v2 does not expose steps."},
+        "retry": retry_metadata(status["data_status"], now=observed_at),
+        "pipeline_version": PIPELINE_VERSION,
+    }
+    expected = {
+        "recovery": recovery,
+        "sleep": sleep,
+        "cycle": cycle,
+        "recovery.spo2": (recovery or {}).get("spo2"),
+        "recovery.skin_temp_celsius": (recovery or {}).get("skin_temp_celsius"),
+        "sleep.respiratory_rate": (sleep or {}).get("respiratory_rate"),
+    }
+    report["missing_fields"] = [name for name, value in expected.items() if value is None]
+    return report, selected
 
 
 @mcp.tool()
@@ -1670,7 +1735,7 @@ async def root(request: Request) -> JSONResponse:
     """Server info endpoint."""
     return JSONResponse({
         "name": "WHOOP Health Data MCP Server",
-        "version": "2.4.0",
+        "version": PIPELINE_VERSION,
         "build": "sse-transport",
         "mcp_server_name": "whoop-health-data",
         "status": "running",
@@ -1684,6 +1749,7 @@ async def root(request: Request) -> JSONResponse:
             "mcp_sse": "/sse (SSE stream - configure Poke to use this)",
             "mcp_messages": "/messages (SSE message posting)",
             "api_poke_context": "/api/poke-context (GET - for automation without MCP)",
+            "api_daily_summary": "/api/daily-summary?date=YYYY-MM-DD (GET - durable validated daily report)",
             "api_record_checkin": "/api/record-checkin (POST - log check-in sent)",
             "api_record_activity": "/api/record-activity (POST - log user activity)"
         },
@@ -1785,7 +1851,7 @@ async def list_tools(request: Request) -> JSONResponse:
     return JSONResponse({
         "count": len(tools),
         "tools": tools,
-        "version": "2.4.0",
+        "version": PIPELINE_VERSION,
         "mcp_server_name": "whoop-health-data"
     })
 
@@ -1889,6 +1955,13 @@ async def api_daily_summary(request: Request) -> JSONResponse:
     """Expose the complete scored WHOOP day payload for daily automations."""
     requested_date = request.query_params.get("date") or datetime.now(timezone.utc).date().isoformat()
     result = await get_historical_day(requested_date)
+    retry = result.get("retry") if isinstance(result, dict) else None
+    if retry:
+        return JSONResponse(
+            result,
+            status_code=202,
+            headers={"Retry-After": str(retry["retry_after_seconds"])},
+        )
     return JSONResponse(result)
 
 
@@ -2047,6 +2120,26 @@ async def background_token_refresh():
             print(f"[Background] Error refreshing token: {e}")
 
 
+async def background_daily_sync():
+    """Retry durable pending daily summaries until they become model-safe."""
+    while True:
+        try:
+            await asyncio.sleep(300)
+            jobs = await database.get_due_daily_sync_jobs(limit=3)
+            for job in jobs:
+                result = await get_historical_day(job["date"])
+                if result.get("error"):
+                    retry_at = datetime.now(timezone.utc) + timedelta(minutes=15)
+                    await database.update_daily_sync_job(
+                        job["date"], completed=False, retry_at=retry_at,
+                        error=result.get("error"),
+                    )
+        except asyncio.CancelledError:
+            break
+        except Exception as error:
+            print(f"[Daily Sync] Retry loop error: {error}")
+
+
 async def refresh_token_if_needed():
     """Check and refresh token immediately on startup."""
     token = await database.get_token()
@@ -2120,15 +2213,22 @@ if __name__ == "__main__":
 
         # Start background token refresh task
         refresh_task = asyncio.create_task(background_token_refresh())
+        daily_sync_task = asyncio.create_task(background_daily_sync())
         print("[Startup] Background token refresh task started (runs every 30 min)")
+        print("[Startup] Durable daily sync retry task started (checks every 5 min)")
         print("[Startup] Ready!")
 
         yield
 
         # Cancel background task on shutdown
         refresh_task.cancel()
+        daily_sync_task.cancel()
         try:
             await refresh_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await daily_sync_task
         except asyncio.CancelledError:
             pass
 
