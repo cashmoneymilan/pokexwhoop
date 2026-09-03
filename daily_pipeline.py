@@ -216,7 +216,7 @@ def day_completion(requested_date: str, cycle: Optional[Dict[str, Any]], *, now:
 
 
 def retry_metadata(data_status: str, *, now: Optional[datetime] = None) -> Optional[Dict[str, Any]]:
-    if data_status not in {"pending", "incomplete"}:
+    if data_status not in {"pending", "incomplete", "missing"}:
         return None
     current_time = now or datetime.now(timezone.utc)
     if current_time.tzinfo is None:

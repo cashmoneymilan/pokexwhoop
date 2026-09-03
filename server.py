@@ -642,6 +642,9 @@ def _build_daily_report(date, recoveries, sleeps, cycles, workouts, overrides, o
         cycle["calorie_status"] = completion
         cycle["calorie_caveat"] = "WHOOP energy expenditure is an estimate, not an exact measurement."
 
+    retry = retry_metadata(status["data_status"], now=observed_at)
+    if status["data_status"] == "missing" and date < (observed_at.date() - timedelta(days=1)).isoformat():
+        retry = None
     report = {
         "date": date,
         **status,
@@ -655,7 +658,7 @@ def _build_daily_report(date, recoveries, sleeps, cycles, workouts, overrides, o
         "manual_override": override or None,
         "missing_fields": [],
         "steps": {"available": False, "reason": "WHOOP Developer API v2 does not expose steps."},
-        "retry": retry_metadata(status["data_status"], now=observed_at),
+        "retry": retry,
         "pipeline_version": PIPELINE_VERSION,
     }
     expected = {

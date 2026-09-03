@@ -87,6 +87,7 @@ class DailyPipelineTests(unittest.TestCase):
     def test_pending_day_requests_a_retry_but_invalidated_day_does_not(self):
         retry = retry_metadata("pending", now=NOW)
         self.assertEqual(retry["retry_after_seconds"], 900)
+        self.assertIsNotNone(retry_metadata("missing", now=NOW))
         self.assertIsNone(retry_metadata("manually_invalidated", now=NOW))
 
 
